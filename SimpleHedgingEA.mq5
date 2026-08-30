@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 10-Order Grid EA with Strict Spread Protection      |
+//| Description: Unblocked 10-Order Grid EA with Error Diagnostic Log|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "39.00"
-#property description "10-Order Grid EA (0.01-0.10 Lot) with Strict Real-Tick Spread Protection & Single-Direction Lock"
+#property version   "40.00"
+#property description "10-Order Grid EA (0.01-0.10 Lot) with Unblocked Spread (60 Pts) & Full Order Diagnostic Logging"
 
 #include <Trade\Trade.mqh>
 
@@ -21,7 +21,7 @@ input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels
 input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
 
 input group "=== Real-Tick & Spread Protection ==="
-input int      InpMaxAllowedSpread    = 30;       // Strict Max Allowed Spread (30 Points = 3 Pips)
+input int      InpMaxAllowedSpread    = 60;       // Max Allowed Spread (60 Points = 6 Pips)
 input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
@@ -59,7 +59,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(GetBestFillingMode());
 
-   PrintFormat("[INIT] 10-Order Spread-Protected EA v39.0 Initialized. Max Spread: %d pts, Target: $%.2f", 
+   PrintFormat("[INIT] Unblocked EA v40.0 Initialized. Max Spread: %d pts, Target: $%.2f", 
                InpMaxAllowedSpread, InpTargetProfitUSD);
    return(INIT_SUCCEEDED);
 }
@@ -115,14 +115,15 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP SAFE 10-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
-      // Strict Real-Tick Spread Check
       long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
       if(InpMaxAllowedSpread > 0 && currentSpread > InpMaxAllowedSpread)
       {
-         return; // Skip grid setup if broker spread widens beyond threshold
+         PrintFormat("[SPREAD BLOCK] Current spread (%d pts) exceeds limit (%d pts). Skipping tick...", 
+                     currentSpread, InpMaxAllowedSpread);
+         return;
       }
 
       SetupProgressivePendingGrid();
@@ -150,8 +151,8 @@ void SetupProgressivePendingGrid()
    double lotStep = 0.01;
    int stepCount = 10;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 20) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 20) * point);
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 30) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 30) * point);
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -166,6 +167,11 @@ void SetupProgressivePendingGrid()
       if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop 0.01-0.10"))
       {
          PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
+      }
+      else
+      {
+         PrintFormat("[ORDER ERROR] BuyStop %d failed! Code: %d, Desc: %s", 
+                     i, m_trade.ResultRetcode(), m_trade.ResultComment());
       }
 
       cumulativeBuyOffset += currentStepDistance;
@@ -184,6 +190,11 @@ void SetupProgressivePendingGrid()
       if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop 0.01-0.10"))
       {
          PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
+      }
+      else
+      {
+         PrintFormat("[ORDER ERROR] SellStop %d failed! Code: %d, Desc: %s", 
+                     i, m_trade.ResultRetcode(), m_trade.ResultComment());
       }
 
       cumulativeSellOffset += currentStepDistance;
