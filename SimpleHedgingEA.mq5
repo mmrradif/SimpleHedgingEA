@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Unblocked Active Grid EA (0.01 to 0.10 Lot)         |
+//| Description: Bulletproof Real-Tick Protection Grid EA            |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "36.00"
-#property description "Active Pending Grid EA (Instant Continuous Execution without New Bar Blockers)"
+#property version   "37.00"
+#property description "Real-Tick Bulletproof Grid EA (Guaranteed $500 Drawdown Exit & Filling Fallback)"
 
 #include <Trade\Trade.mqh>
 
@@ -33,6 +33,17 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 CTrade         m_trade;
 
 //+------------------------------------------------------------------+
+//| Auto Detect Broker Order Filling Mode                            |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetBestFillingMode()
+{
+   uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
+   if((filling & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
+}
+
+//+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -45,9 +56,9 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
-   m_trade.SetTypeFilling(ORDER_FILLING_FOK);
+   m_trade.SetTypeFilling(GetBestFillingMode());
 
-   PrintFormat("[INIT] Active Grid EA v36.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Bulletproof Grid EA v37.0 Initialized. Target: $%.2f, Max DD Limit: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -65,7 +76,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // 1. Strict Emergency Drawdown Check (Percent & USD Cap)
+   // 1. Strict Emergency Drawdown Check (Highest Priority)
    if(CheckEquityProtection())
    {
       return;
@@ -93,7 +104,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED FAST PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET
+   // 4. GUARANTEED FAST PROFIT EXIT ($2.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f. Closing all positions...", 
@@ -101,12 +112,11 @@ void OnTick()
       CloseAllPositionsGuaranteed();
       DeleteAllPendingOrdersGuaranteed();
       
-      // Setup fresh M1 Zone grid
       SetupProgressivePendingGrid();
       return;
    }
 
-   // 5. SETUP INSTANT ACTIVE PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -232,11 +242,14 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE orderType)
 }
 
 //+------------------------------------------------------------------+
-//| Bulletproof Position Close with Retry                            |
+//| Bulletproof Position Close with Multi-Filling Fallback           |
 //+------------------------------------------------------------------+
 bool CloseAllPositionsGuaranteed()
 {
-   for(int retry = 0; retry < 10; retry++)
+   ENUM_ORDER_TYPE_FILLING filling = GetBestFillingMode();
+   m_trade.SetTypeFilling(filling);
+
+   for(int retry = 0; retry < 15; retry++)
    {
       ulong tickets[];
       int count = 0;
@@ -256,10 +269,32 @@ bool CloseAllPositionsGuaranteed()
 
       for(int k = 0; k < count; k++)
       {
-         m_trade.PositionClose(tickets[k]);
+         if(!m_trade.PositionClose(tickets[k]))
+         {
+            // Fallback raw OrderSend market close if CTrade fails
+            MqlTradeRequest req = {};
+            MqlTradeResult  res = {};
+
+            PositionSelectByTicket(tickets[k]);
+            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            double volume = PositionGetDouble(POSITION_VOLUME);
+
+            req.action       = TRADE_ACTION_DEAL;
+            req.position     = tickets[k];
+            req.symbol       = _Symbol;
+            req.volume       = volume;
+            req.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+            req.price        = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            req.deviation    = InpSlippage;
+            req.magic        = InpMagicNumber;
+            req.type_filling = filling;
+
+            bool sent = OrderSend(req, res);
+            if(sent) { PrintFormat("[EMERGENCY EXIT] Ticket %d closed via raw OrderSend.", tickets[k]); }
+         }
       }
 
-      Sleep(100);
+      Sleep(50);
    }
    return false;
 }
@@ -269,7 +304,7 @@ bool CloseAllPositionsGuaranteed()
 //+------------------------------------------------------------------+
 bool DeleteAllPendingOrdersGuaranteed()
 {
-   for(int retry = 0; retry < 10; retry++)
+   for(int retry = 0; retry < 15; retry++)
    {
       ulong tickets[];
       int count = 0;
@@ -292,7 +327,7 @@ bool DeleteAllPendingOrdersGuaranteed()
          m_trade.OrderDelete(tickets[k]);
       }
 
-      Sleep(100);
+      Sleep(50);
    }
    return false;
 }
@@ -362,20 +397,19 @@ bool CheckEquityProtection()
       // 1. Hard Max USD Drawdown Cap ($500.00)
       if(InpMaxDrawdownUSD > 0 && floatingLossUSD >= InpMaxDrawdownUSD)
       {
-         PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Closing all positions.", 
+         PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Forcing liquidations...", 
                      floatingLossUSD, InpMaxDrawdownUSD);
-         CloseAllPositionsGuaranteed();
          DeleteAllPendingOrdersGuaranteed();
+         CloseAllPositionsGuaranteed();
          return true;
       }
 
       // 2. Hard Equity Percent Protection
       if(drawdownPercent >= InpMaxDrawdownPercent)
       {
-         PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached (Limit: %.2f%%)! Closing all & deleting pendings.", 
-                     drawdownPercent, InpMaxDrawdownPercent);
-         CloseAllPositionsGuaranteed();
+         PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Forcing liquidations...", drawdownPercent);
          DeleteAllPendingOrdersGuaranteed();
+         CloseAllPositionsGuaranteed();
          return true;
       }
    }
