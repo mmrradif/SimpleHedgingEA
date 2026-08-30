@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Bulletproof Real-Tick Protection Grid EA            |
+//| Description: Real-Tick Single-Direction Grid EA (0.01-0.05 Lot)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "37.00"
-#property description "Real-Tick Bulletproof Grid EA (Guaranteed $500 Drawdown Exit & Filling Fallback)"
+#property version   "38.00"
+#property description "Real-Tick Safe Single-Direction Grid EA (Eliminates Hedging Traps & Account Blows)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,13 +15,13 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Orders
-input int      InpBaseGridStepPoints  = 250;      // Distance Between Levels (250 Points = 25 Pips)
+input double   InpMaxLotLimit         = 0.05;     // Max Safe Lot Limit (0.05) - Max 5 Orders (Safe 0.15 Total Lots)
+input int      InpBaseGridStepPoints  = 200;      // Distance Between Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
-input double   InpTargetProfitUSD     = 2.00;     // Target Net Profit per Basket ($2.00 Close All)
-input bool     InpCancelOppositeStops = true;     // Auto-Cancel Opposite Pendings on Entry
+input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
 
-input group "=== Max Drawdown & Risk Control ==="
+input group "=== Real-Tick Protection & Direction Lock ==="
+input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Lock Traps)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
 
@@ -58,7 +58,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(GetBestFillingMode());
 
-   PrintFormat("[INIT] Bulletproof Grid EA v37.0 Initialized. Target: $%.2f, Max DD Limit: $%.2f", 
+   PrintFormat("[INIT] Real-Tick Single-Direction EA v38.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -89,17 +89,15 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. AUTO OPPOSITE PENDING CANCELLATION
-   if(InpCancelOppositeStops && totalOpenPositions > 0)
+   // 3. STRICT SINGLE-DIRECTION LOCK (Prevents Real-Tick Double Traps)
+   if(InpStrictDirectionLock && totalOpenPositions > 0)
    {
-      if(buyCount > 0 && sellStopCount > 0)
+      if(buyCount > 0 && (sellStopCount > 0 || sellCount > 0))
       {
-         Print("[LOCK PREVENTION] BUY executed! Deleting opposite SELL STOP pendings...");
          DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
       }
-      else if(sellCount > 0 && buyStopCount > 0)
+      if(sellCount > 0 && (buyStopCount > 0 || buyCount > 0))
       {
-         Print("[LOCK PREVENTION] SELL executed! Deleting opposite BUY STOP pendings...");
          DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
       }
    }
@@ -116,7 +114,7 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP SAFE PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -124,7 +122,7 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Setup Progressive Spacing Pending Grid (10 Orders: 0.01 -> 0.10) |
+//| Setup Progressive Spacing Pending Grid (Max 5 Orders: 0.01->0.05)|
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -142,7 +140,8 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 10;
+   int stepCount = (int)MathRound((InpMaxLotLimit - startLot) / lotStep) + 1;
+   if(stepCount < 1) stepCount = 5;
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 20) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 20) * point);
@@ -151,13 +150,13 @@ void SetupProgressivePendingGrid()
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 1. Place 10 BUY STOP Orders (0.01, 0.02, 0.03 ... 0.10)
+   // 1. Place BUY STOP Orders (0.01, 0.02, 0.03, 0.04, 0.05)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop 0.01-0.10"))
+      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop Safe"))
       {
          PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
@@ -169,13 +168,13 @@ void SetupProgressivePendingGrid()
    // Reset step distance for Sell grid
    currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 2. Place 10 SELL STOP Orders (0.01, 0.02, 0.03 ... 0.10)
+   // 2. Place SELL STOP Orders (0.01, 0.02, 0.03, 0.04, 0.05)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop 0.01-0.10"))
+      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop Safe"))
       {
          PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
@@ -186,7 +185,7 @@ void SetupProgressivePendingGrid()
 }
 
 //+------------------------------------------------------------------+
-//| Find M1 Support and Resistance Zone (Safe with Fallback)        |
+//| Find M1 Support and Resistance Zone                              |
 //+------------------------------------------------------------------+
 void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
 {
@@ -271,7 +270,6 @@ bool CloseAllPositionsGuaranteed()
       {
          if(!m_trade.PositionClose(tickets[k]))
          {
-            // Fallback raw OrderSend market close if CTrade fails
             MqlTradeRequest req = {};
             MqlTradeResult  res = {};
 
