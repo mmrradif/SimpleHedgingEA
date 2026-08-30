@@ -2,27 +2,27 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Progressive Grid EA ($5.00 Target Profit Exit)     |
+//| Description: Progressive Grid EA (0.10 to 0.20 Lot, $1000 DD Cap)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "30.00"
-#property description "Progressive Distance Pending Grid EA ($5.00 Basket Target Profit Exit)"
+#property version   "31.00"
+#property description "Progressive Distance Pending Grid EA (0.10 to 0.20 Lot, $1000 DD, $10 Target)"
 
 #include <Trade\Trade.mqh>
 
 //--- Input Parameters
 input group "=== Grid & Lot Settings ==="
-input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
+input double   InpStartLot            = 0.10;     // Initial Starting Lot (0.10)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
+input double   InpMaxLotLimit         = 0.20;     // Max Lot Limit (0.20) - 11 Orders (0.10 to 0.20)
 input int      InpBaseGridStepPoints  = 250;      // Base Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
-input double   InpTargetProfitUSD     = 5.00;     // Target Net Profit per Basket ($5.00 Close All)
+input double   InpTargetProfitUSD     = 10.00;    // Target Net Profit per Basket ($10.00 Close All)
 input bool     InpCancelOppositeStops = true;     // Auto-Cancel Opposite Pendings on Entry
 
 input group "=== Max Drawdown & Risk Control ==="
-input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
+input double   InpMaxDrawdownUSD      = 1000.0;   // Strict Maximum Allowed Drawdown ($1000.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
 
 input group "=== Expert Settings ==="
@@ -47,8 +47,8 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(ORDER_FILLING_FOK);
 
-   PrintFormat("[INIT] Progressive Distance Grid EA v30.0 Initialized. Target Profit: $%.2f", 
-               InpTargetProfitUSD);
+   PrintFormat("[INIT] Progressive Distance Grid EA v31.0 Initialized. Lot 0.10 to 0.20, Max DD: $%.2f, Target: $%.2f", 
+               InpMaxDrawdownUSD, InpTargetProfitUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -93,7 +93,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($5.00 TARGET)
+   // 4. GUARANTEED PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($10.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f. Closing all positions...", 
@@ -114,7 +114,7 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Setup Progressive Spacing Pending Grid (10 Orders: 0.01 -> 0.10) |
+//| Setup Progressive Spacing Pending Grid (0.10 -> 0.20 Lot)        |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -130,9 +130,11 @@ void SetupProgressivePendingGrid()
 
    DeleteAllPendingOrdersGuaranteed();
 
-   double startLot = 0.01;
+   double startLot = 0.10;
    double lotStep = 0.01;
-   int stepCount = 10;
+   double maxLot = 0.20;
+   int stepCount = (int)MathRound((maxLot - startLot) / lotStep) + 1;
+   if(stepCount < 1) stepCount = 11;
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 20) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 20) * point);
@@ -141,13 +143,13 @@ void SetupProgressivePendingGrid()
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 1. Place 10 BUY STOP Orders (0.01, 0.02, 0.03 ... 0.10)
+   // 1. Place BUY STOP Orders (0.10, 0.11, 0.12 ... 0.20)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop 0.01-0.10"))
+      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop 0.10-0.20"))
       {
          PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
@@ -159,13 +161,13 @@ void SetupProgressivePendingGrid()
    // Reset step distance for Sell grid
    currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 2. Place 10 SELL STOP Orders (0.01, 0.02, 0.03 ... 0.10)
+   // 2. Place SELL STOP Orders (0.10, 0.11, 0.12 ... 0.20)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop 0.01-0.10"))
+      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop 0.10-0.20"))
       {
          PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
@@ -359,7 +361,7 @@ bool CheckEquityProtection()
       double floatingLossUSD = balance - equity;
       double drawdownPercent = (floatingLossUSD / balance) * 100.0;
 
-      // 1. Hard Max USD Drawdown Cap ($500.00)
+      // 1. Hard Max USD Drawdown Cap ($1000.00)
       if(InpMaxDrawdownUSD > 0 && floatingLossUSD >= InpMaxDrawdownUSD)
       {
          PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Closing all positions.", 
