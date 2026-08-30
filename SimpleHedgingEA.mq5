@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Progressive Grid EA (0.10 to 0.20 Lot, $1000 DD Cap)|
+//| Description: Progressive Grid EA (0.10 to 0.20 Lot, $20 Target)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "31.00"
-#property description "Progressive Distance Pending Grid EA (0.10 to 0.20 Lot, $1000 DD, $10 Target)"
+#property version   "32.00"
+#property description "Progressive Distance Pending Grid EA (0.10 to 0.20 Lot, $1000 DD, $20 Target)"
 
 #include <Trade\Trade.mqh>
 
@@ -18,7 +18,7 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.20;     // Max Lot Limit (0.20) - 11 Orders (0.10 to 0.20)
 input int      InpBaseGridStepPoints  = 250;      // Base Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
-input double   InpTargetProfitUSD     = 10.00;    // Target Net Profit per Basket ($10.00 Close All)
+input double   InpTargetProfitUSD     = 20.00;    // Target Net Profit per Basket ($20.00 Close All)
 input bool     InpCancelOppositeStops = true;     // Auto-Cancel Opposite Pendings on Entry
 
 input group "=== Max Drawdown & Risk Control ==="
@@ -47,7 +47,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(ORDER_FILLING_FOK);
 
-   PrintFormat("[INIT] Progressive Distance Grid EA v31.0 Initialized. Lot 0.10 to 0.20, Max DD: $%.2f, Target: $%.2f", 
+   PrintFormat("[INIT] Progressive Distance Grid EA v32.0 Initialized. Lot 0.10 to 0.20, Max DD: $%.2f, Target: $%.2f", 
                InpMaxDrawdownUSD, InpTargetProfitUSD);
    return(INIT_SUCCEEDED);
 }
@@ -93,7 +93,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($10.00 TARGET)
+   // 4. GUARANTEED PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($20.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f. Closing all positions...", 
