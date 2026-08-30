@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: High-Frequency Quick Profit EA ($2.00 Fast Target)  |
+//| Description: Real-Tick Resistant Pending Grid EA (0.01-0.10 Lot) |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "34.00"
-#property description "High-Frequency Pending Grid EA (0.01-0.10 Lot, $2.00 Fast Target, $500 Max DD)"
+#property version   "35.00"
+#property description "Real-Tick Resistant Pending Grid EA (Protected against Real-Tick Whipsaws & Spread Spikes)"
 
 #include <Trade\Trade.mqh>
 
@@ -16,12 +16,14 @@ input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Orders
-input int      InpBaseGridStepPoints  = 150;      // Tight Grid Distance (150 Points = 15 Pips)
-input double   InpSpacingMultiplier   = 1.15;     // Smooth Distance Multiplier
-input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
+input int      InpBaseGridStepPoints  = 250;      // Real-Tick Buffer Distance (250 Points = 25 Pips)
+input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
+input double   InpTargetProfitUSD     = 2.00;     // Target Net Profit per Basket ($2.00 Close All)
 input bool     InpCancelOppositeStops = true;     // Auto-Cancel Opposite Pendings on Entry
 
-input group "=== Max Drawdown & Risk Control ==="
+input group "=== Real-Tick Safety Filters ==="
+input bool     InpUseNewBarFilter     = true;     // Place Grid Only on New Bar Open (Eliminates Tick Noise)
+input int      InpMaxAllowedSpread    = 35;       // Max Allowed Spread for Grid Entry (35 Points = 3.5 Pips)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
 
@@ -31,6 +33,7 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
+datetime       m_lastBarTime;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -47,7 +50,9 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(ORDER_FILLING_FOK);
 
-   PrintFormat("[INIT] High-Frequency Grid EA Initialized. Lot 0.01-0.10, Fast Target: $%.2f, Max DD: $%.2f", 
+   m_lastBarTime = 0;
+
+   PrintFormat("[INIT] Real-Tick EA v35.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -93,7 +98,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED FAST PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($2.00 FAST TARGET)
+   // 4. GUARANTEED FAST PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f. Closing all positions...", 
@@ -106,11 +111,38 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP PROGRESSIVE PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP REAL-TICK SAFE PENDING GRID
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
+      // Check New Bar Filter to prevent real-tick noise
+      if(InpUseNewBarFilter && !IsNewBarOpen())
+      {
+         return;
+      }
+
+      // Check Spread Protection
+      long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+      if(spread > InpMaxAllowedSpread)
+      {
+         return; // Skip setup during high spread ticks
+      }
+
       SetupProgressivePendingGrid();
    }
+}
+
+//+------------------------------------------------------------------+
+//| Check New M1 Bar Open                                            |
+//+------------------------------------------------------------------+
+bool IsNewBarOpen()
+{
+   datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
+   if(currentBarTime != m_lastBarTime)
+   {
+      m_lastBarTime = currentBarTime;
+      return true;
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -134,8 +166,8 @@ void SetupProgressivePendingGrid()
    double lotStep = 0.01;
    int stepCount = 10;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 25) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 25) * point);
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -184,8 +216,8 @@ void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 
-   m1High = ask + (40 * point);
-   m1Low = bid - (40 * point);
+   m1High = ask + (50 * point);
+   m1Low = bid - (50 * point);
 
    if(lookback <= 0) return;
 
