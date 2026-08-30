@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Real-Tick Single-Direction Grid EA (0.01-0.05 Lot)  |
+//| Description: 10-Order Grid EA with Strict Spread Protection      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "38.00"
-#property description "Real-Tick Safe Single-Direction Grid EA (Eliminates Hedging Traps & Account Blows)"
+#property version   "39.00"
+#property description "10-Order Grid EA (0.01-0.10 Lot) with Strict Real-Tick Spread Protection & Single-Direction Lock"
 
 #include <Trade\Trade.mqh>
 
@@ -15,13 +15,14 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.05;     // Max Safe Lot Limit (0.05) - Max 5 Orders (Safe 0.15 Total Lots)
-input int      InpBaseGridStepPoints  = 200;      // Distance Between Levels (200 Points = 20 Pips)
+input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
+input int      InpBaseGridStepPoints  = 250;      // Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
 input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
 
-input group "=== Real-Tick Protection & Direction Lock ==="
-input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Lock Traps)
+input group "=== Real-Tick & Spread Protection ==="
+input int      InpMaxAllowedSpread    = 30;       // Strict Max Allowed Spread (30 Points = 3 Pips)
+input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
 
@@ -58,8 +59,8 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(GetBestFillingMode());
 
-   PrintFormat("[INIT] Real-Tick Single-Direction EA v38.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxDrawdownUSD);
+   PrintFormat("[INIT] 10-Order Spread-Protected EA v39.0 Initialized. Max Spread: %d pts, Target: $%.2f", 
+               InpMaxAllowedSpread, InpTargetProfitUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -114,15 +115,22 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP SAFE PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP SAFE 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
+      // Strict Real-Tick Spread Check
+      long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+      if(InpMaxAllowedSpread > 0 && currentSpread > InpMaxAllowedSpread)
+      {
+         return; // Skip grid setup if broker spread widens beyond threshold
+      }
+
       SetupProgressivePendingGrid();
    }
 }
 
 //+------------------------------------------------------------------+
-//| Setup Progressive Spacing Pending Grid (Max 5 Orders: 0.01->0.05)|
+//| Setup Progressive Spacing Pending Grid (10 Orders: 0.01 -> 0.10) |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -140,8 +148,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = (int)MathRound((InpMaxLotLimit - startLot) / lotStep) + 1;
-   if(stepCount < 1) stepCount = 5;
+   int stepCount = 10;
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 20) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 20) * point);
@@ -150,13 +157,13 @@ void SetupProgressivePendingGrid()
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 1. Place BUY STOP Orders (0.01, 0.02, 0.03, 0.04, 0.05)
+   // 1. Place 10 BUY STOP Orders (0.01, 0.02, 0.03 ... 0.10)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop Safe"))
+      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop 0.01-0.10"))
       {
          PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
@@ -168,13 +175,13 @@ void SetupProgressivePendingGrid()
    // Reset step distance for Sell grid
    currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 2. Place SELL STOP Orders (0.01, 0.02, 0.03, 0.04, 0.05)
+   // 2. Place 10 SELL STOP Orders (0.01, 0.02, 0.03 ... 0.10)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop Safe"))
+      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop 0.01-0.10"))
       {
          PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
