@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Original Best Grid EA (0.01 to 0.10 Lot, $5 TP, $500 DD)|
+//| Description: High-Frequency Quick Profit EA ($2.00 Fast Target)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "33.00"
-#property description "Original Best Pending Grid EA (0.01 to 0.10 Lot, $5 Target Profit, $500 Max DD)"
+#property version   "34.00"
+#property description "High-Frequency Pending Grid EA (0.01-0.10 Lot, $2.00 Fast Target, $500 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,10 +15,10 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
-input int      InpBaseGridStepPoints  = 250;      // Base Distance Between Levels (250 Points = 25 Pips)
-input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
-input double   InpTargetProfitUSD     = 5.00;     // Target Net Profit per Basket ($5.00 Close All)
+input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Orders
+input int      InpBaseGridStepPoints  = 150;      // Tight Grid Distance (150 Points = 15 Pips)
+input double   InpSpacingMultiplier   = 1.15;     // Smooth Distance Multiplier
+input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
 input bool     InpCancelOppositeStops = true;     // Auto-Cancel Opposite Pendings on Entry
 
 input group "=== Max Drawdown & Risk Control ==="
@@ -47,7 +47,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFilling(ORDER_FILLING_FOK);
 
-   PrintFormat("[INIT] Original Grid EA Initialized. Lot 0.01 to 0.10, Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] High-Frequency Grid EA Initialized. Lot 0.01-0.10, Fast Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -93,7 +93,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($5.00 TARGET)
+   // 4. GUARANTEED FAST PROFIT EXIT -> CLOSE ALL POSITIONS & DELETE ALL PENDINGS -> RESET ($2.00 FAST TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f. Closing all positions...", 
@@ -134,8 +134,8 @@ void SetupProgressivePendingGrid()
    double lotStep = 0.01;
    int stepCount = 10;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 20) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 20) * point);
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -184,8 +184,8 @@ void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 
-   m1High = ask + (50 * point);
-   m1Low = bid - (50 * point);
+   m1High = ask + (40 * point);
+   m1Low = bid - (40 * point);
 
    if(lookback <= 0) return;
 
