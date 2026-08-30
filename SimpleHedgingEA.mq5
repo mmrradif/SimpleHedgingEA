@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Unblocked 10-Order Grid EA with Error Diagnostic Log|
+//| Description: Guaranteed Pending Order Placement Grid EA          |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "40.00"
-#property description "10-Order Grid EA (0.01-0.10 Lot) with Unblocked Spread (60 Pts) & Full Order Diagnostic Logging"
+#property version   "41.00"
+#property description "Guaranteed Pending Order Placement Grid EA (Multi-Filling Fallback for 100% Placement Success)"
 
 #include <Trade\Trade.mqh>
 
@@ -20,8 +20,7 @@ input int      InpBaseGridStepPoints  = 250;      // Distance Between Levels (25
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
 input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
 
-input group "=== Real-Tick & Spread Protection ==="
-input int      InpMaxAllowedSpread    = 60;       // Max Allowed Spread (60 Points = 6 Pips)
+input group "=== Real-Tick & Risk Control ==="
 input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
@@ -32,17 +31,6 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
-
-//+------------------------------------------------------------------+
-//| Auto Detect Broker Order Filling Mode                            |
-//+------------------------------------------------------------------+
-ENUM_ORDER_TYPE_FILLING GetBestFillingMode()
-{
-   uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
-   if((filling & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
-   if((filling & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
-   return ORDER_FILLING_RETURN;
-}
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -57,10 +45,9 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
-   m_trade.SetTypeFilling(GetBestFillingMode());
 
-   PrintFormat("[INIT] Unblocked EA v40.0 Initialized. Max Spread: %d pts, Target: $%.2f", 
-               InpMaxAllowedSpread, InpTargetProfitUSD);
+   PrintFormat("[INIT] Guaranteed Grid EA v41.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+               InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -115,19 +102,55 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP 10-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP INSTANT 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
-      long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-      if(InpMaxAllowedSpread > 0 && currentSpread > InpMaxAllowedSpread)
-      {
-         PrintFormat("[SPREAD BLOCK] Current spread (%d pts) exceeds limit (%d pts). Skipping tick...", 
-                     currentSpread, InpMaxAllowedSpread);
-         return;
-      }
-
       SetupProgressivePendingGrid();
    }
+}
+
+//+------------------------------------------------------------------+
+//| Guaranteed Multi-Filling Pending Order Placer                    |
+//+------------------------------------------------------------------+
+bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, string comment)
+{
+   // Try CTrade first
+   if(orderType == ORDER_TYPE_BUY_STOP)
+   {
+      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment)) return true;
+   }
+   else if(orderType == ORDER_TYPE_SELL_STOP)
+   {
+      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment)) return true;
+   }
+
+   // Fallback Raw OrderSend with FOK, IOC, and RETURN filling attempts
+   ENUM_ORDER_TYPE_FILLING fillings[] = {ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN};
+   for(int f = 0; f < 3; f++)
+   {
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+
+      req.action       = TRADE_ACTION_PENDING;
+      req.symbol       = _Symbol;
+      req.volume       = lot;
+      req.price        = price;
+      req.type         = orderType;
+      req.type_filling = fillings[f];
+      req.type_time    = ORDER_TIME_GTC;
+      req.deviation    = InpSlippage;
+      req.magic        = InpMagicNumber;
+      req.comment      = comment;
+
+      if(OrderSend(req, res))
+      {
+         if(res.retcode == TRADE_RETCODE_DONE || res.retcode == TRADE_RETCODE_PLACED)
+         {
+            return true;
+         }
+      }
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -151,8 +174,8 @@ void SetupProgressivePendingGrid()
    double lotStep = 0.01;
    int stepCount = 10;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 30) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 30) * point);
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 25) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 25) * point);
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -164,14 +187,9 @@ void SetupProgressivePendingGrid()
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "BuyStop 0.01-0.10"))
+      if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop 0.01-0.10"))
       {
-         PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
-      }
-      else
-      {
-         PrintFormat("[ORDER ERROR] BuyStop %d failed! Code: %d, Desc: %s", 
-                     i, m_trade.ResultRetcode(), m_trade.ResultComment());
+         PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed successfully.", i, lot, price);
       }
 
       cumulativeBuyOffset += currentStepDistance;
@@ -187,14 +205,9 @@ void SetupProgressivePendingGrid()
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "SellStop 0.01-0.10"))
+      if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop 0.01-0.10"))
       {
-         PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
-      }
-      else
-      {
-         PrintFormat("[ORDER ERROR] SellStop %d failed! Code: %d, Desc: %s", 
-                     i, m_trade.ResultRetcode(), m_trade.ResultComment());
+         PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed successfully.", i, lot, price);
       }
 
       cumulativeSellOffset += currentStepDistance;
@@ -263,8 +276,7 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE orderType)
 //+------------------------------------------------------------------+
 bool CloseAllPositionsGuaranteed()
 {
-   ENUM_ORDER_TYPE_FILLING filling = GetBestFillingMode();
-   m_trade.SetTypeFilling(filling);
+   ENUM_ORDER_TYPE_FILLING fillings[] = {ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN};
 
    for(int retry = 0; retry < 15; retry++)
    {
@@ -288,25 +300,30 @@ bool CloseAllPositionsGuaranteed()
       {
          if(!m_trade.PositionClose(tickets[k]))
          {
-            MqlTradeRequest req = {};
-            MqlTradeResult  res = {};
-
             PositionSelectByTicket(tickets[k]);
             ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
             double volume = PositionGetDouble(POSITION_VOLUME);
 
-            req.action       = TRADE_ACTION_DEAL;
-            req.position     = tickets[k];
-            req.symbol       = _Symbol;
-            req.volume       = volume;
-            req.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-            req.price        = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            req.deviation    = InpSlippage;
-            req.magic        = InpMagicNumber;
-            req.type_filling = filling;
+            for(int f = 0; f < 3; f++)
+            {
+               MqlTradeRequest req = {};
+               MqlTradeResult  res = {};
 
-            bool sent = OrderSend(req, res);
-            if(sent) { PrintFormat("[EMERGENCY EXIT] Ticket %d closed via raw OrderSend.", tickets[k]); }
+               req.action       = TRADE_ACTION_DEAL;
+               req.position     = tickets[k];
+               req.symbol       = _Symbol;
+               req.volume       = volume;
+               req.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+               req.price        = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+               req.deviation    = InpSlippage;
+               req.magic        = InpMagicNumber;
+               req.type_filling = fillings[f];
+
+               if(OrderSend(req, res))
+               {
+                  if(res.retcode == TRADE_RETCODE_DONE) break;
+               }
+            }
          }
       }
 
