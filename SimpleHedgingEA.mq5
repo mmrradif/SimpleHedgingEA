@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Combined Net Basket Liquidator Dual Grid EA         |
+//| Description: Inverted Reversal Lot Dual Grid EA                  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "128.00"
-#property description "Combined Net Basket Liquidator EA: Always closes ALL Buy and Sell trades combined together as a single unified basket ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "129.00"
+#property description "Inverted Reversal Lot EA: Primary grid uses 0.01 -> 0.11 lots; Reversal safety grid uses REVERSE LOTS 0.11 -> 0.01 to rapidly liquidate peak reversals ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -58,8 +58,8 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 //--- Global Variables
 CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
-int              m_buyGridPlacedCount;
-int              m_sellGridPlacedCount;
+int              m_primaryGridPlacedCount;
+int              m_reversalGridPlacedCount;
 int              m_fastEmaHandle;
 int              m_slowEmaHandle;
 
@@ -83,8 +83,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Combined Net Basket Liquidator EA v128.0 Initialized. Target: $%.2f per 0.01 Lot, Max DD: $%.2f", 
-               InpProfitPerMicroLot, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Inverted Reversal Lot EA v129.0 Initialized. Reversal Lots: 0.11 -> 0.01, Max DD: $%.2f", 
+               InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -150,7 +150,7 @@ void OnTick()
    // 6. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
-      if(m_buyGridPlacedCount < InpMaxGridLevels || m_sellGridPlacedCount < InpMaxGridLevels)
+      if(m_primaryGridPlacedCount < InpMaxGridLevels || m_reversalGridPlacedCount < InpMaxGridLevels)
       {
          SetupPacedInitialDualGrid();
          return;
@@ -185,7 +185,9 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Setup EMA-Guided 20-Pip Offset Reversal Dual Grid               |
+//| Setup Inverted Reversal Lot Dual Grid                           |
+//| Primary Grid: Normal Lot Order (0.01 -> 0.11)                  |
+//| Reversal Safety Grid: INVERTED LOT ORDER (0.11 -> 0.01)          |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -201,59 +203,71 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   double buyBasePrice = 0, sellBasePrice = 0;
+   ENUM_ORDER_TYPE primaryType = (trendDir >= 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   ENUM_ORDER_TYPE reversalType = (trendDir >= 0) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
 
-   if(trendDir >= 0) // Bullish or Neutral Trend: Primary BuyStops at M1 High, Reversal SellStops 20 Pips Below
+   double primaryBasePrice = 0, reversalBasePrice = 0;
+
+   if(trendDir >= 0) // Bullish Trend: BuyStops at M1 High (0.01->0.11), SellStops 20 pips below (0.11->0.01 REVERSE)
    {
-      buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-      sellBasePrice = MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
+      primaryBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+      reversalBasePrice = MathMin(primaryBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
    }
-   else // Bearish Trend: Primary SellStops at M1 Low, Reversal BuyStops 20 Pips Above
+   else // Bearish Trend: SellStops at M1 Low (0.01->0.11), BuyStops 20 pips above (0.11->0.01 REVERSE)
    {
-      sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
-      buyBasePrice = MathMax(sellBasePrice + InpReversalOffsetPoints * point, ask + (stopLevel + 15) * point);
+      primaryBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+      reversalBasePrice = MathMax(primaryBasePrice + InpReversalOffsetPoints * point, ask + (stopLevel + 15) * point);
    }
 
-   // 1. Place 11 BuyStops (0.01 to 0.11 lot)
-   if(m_buyGridPlacedCount < InpMaxGridLevels)
+   // 1. Primary Grid Placement (0.01 -> 0.11 Lot Order)
+   if(m_primaryGridPlacedCount < InpMaxGridLevels)
    {
-      int i = m_buyGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+      int i = m_primaryGridPlacedCount + 1;
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep); // 0.01, 0.02 ... 0.11
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
+      double price = 0;
 
-      if(price > ask + stopLevel * point)
+      if(primaryType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(primaryBasePrice + cumulativeOffset, _Digits);
+      else price = NormalizeDouble(primaryBasePrice - cumulativeOffset, _Digits);
+
+      if((primaryType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
+         (primaryType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
       {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
+         if(PlacePendingOrderSafe(primaryType, lot, price, StringFormat("PrimaryZone #%d", i)))
          {
-            m_buyGridPlacedCount++;
+            m_primaryGridPlacedCount++;
          }
       }
       else
       {
-         m_buyGridPlacedCount++;
+         m_primaryGridPlacedCount++;
       }
       return; // 1 Order per tick!
    }
 
-   // 2. Place 11 SellStops 20 Pips Below (0.01 to 0.11 lot)
-   if(m_sellGridPlacedCount < InpMaxGridLevels)
+   // 2. Reversal Safety Grid Placement (REVERSE LOT ORDER: 0.11 -> 0.01)
+   if(m_reversalGridPlacedCount < InpMaxGridLevels)
    {
-      int i = m_sellGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+      int i = m_reversalGridPlacedCount + 1;
+      // INVERTED LOT CALCULATION: First order gets the BIG LOT (0.11), scaling down to (0.01)
+      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep); // 0.11, 0.10 ... 0.01
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+      double price = 0;
 
-      if(price < bid - stopLevel * point)
+      if(reversalType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(reversalBasePrice + cumulativeOffset, _Digits);
+      else price = NormalizeDouble(reversalBasePrice - cumulativeOffset, _Digits);
+
+      if((reversalType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
+         (reversalType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
       {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
+         if(PlacePendingOrderSafe(reversalType, lot, price, StringFormat("ReversalSafety #%d (ReverseLot)", i)))
          {
-            m_sellGridPlacedCount++;
+            m_reversalGridPlacedCount++;
          }
       }
       else
       {
-         m_sellGridPlacedCount++;
+         m_reversalGridPlacedCount++;
       }
       return; // 1 Order per tick!
    }
@@ -295,9 +309,9 @@ bool IsWithinBDTradingHours()
 //+------------------------------------------------------------------+
 void ResetStateMachine()
 {
-   m_gridState           = GRID_STATE_EMPTY;
-   m_buyGridPlacedCount  = 0;
-   m_sellGridPlacedCount = 0;
+   m_gridState               = GRID_STATE_EMPTY;
+   m_primaryGridPlacedCount  = 0;
+   m_reversalGridPlacedCount = 0;
 }
 
 //+------------------------------------------------------------------+
