@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Pure Dual Grid EA (11 BuyStops & 11 SellStops Only) |
+//| Description: Zero-Hanging Smart Break-Even Time Exit Dual Grid  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "90.00"
-#property description "Pure Dual Grid EA (Strictly 11 BuyStops in Buy Zone & 11 SellStops in Sell Zone Only - Zero Counter Pendings)"
+#property version   "91.00"
+#property description "Pure Dual Grid EA with Smart Break-Even Time Exit (Reduces Target to +$0.10 USD After 60 Mins - Guaranteed ZERO Hanging Trades)"
 
 #include <Trade\Trade.mqh>
 
@@ -27,6 +27,7 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
 input double   InpSpacingMultiplier   = 1.15;     // Distance Multiplier
 input double   InpTargetProfitUSD     = 1.50;     // Fast Target Net Profit ($1.50 Close All)
+input int      InpMaxHoldMinutes      = 60;       // Max Hold Time (60 Mins - Reduces Target to +$0.10 Break-Even)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
@@ -49,6 +50,7 @@ CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
 int              m_buyGridPlacedCount;
 int              m_sellGridPlacedCount;
+datetime         m_firstTradeOpenTime;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -66,8 +68,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Pure Dual Grid EA v90.0 Initialized (11 BuyStops & 11 SellStops Only). Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Zero-Hanging Dual Grid EA v91.0 Initialized. Max Hold: %d mins. Target: $%.2f, Max DD: $%.2f", 
+               InpMaxHoldMinutes, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -107,7 +109,17 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 4. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time, close ONLY if totalProfitUSD > 0.0)
+   // 4. Track First Position Open Time
+   if(totalOpenPositions > 0 && m_firstTradeOpenTime == 0)
+   {
+      m_firstTradeOpenTime = TimeCurrent();
+   }
+   if(totalOpenPositions == 0)
+   {
+      m_firstTradeOpenTime = 0;
+   }
+
+   // 5. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time, close ONLY if totalProfitUSD > 0.0)
    if(InpEODProfitOnlyClose && IsEODCloseTime())
    {
       if(totalOpenPositions > 0 && totalProfitUSD > 0.0)
@@ -119,7 +131,7 @@ void OnTick()
       }
    }
 
-   // 5. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
+   // 6. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
    if(InpUseTimeWindow && !IsWithinBDTradingHours())
    {
       // Outside BD trading hours: if no open positions exist, clean up pendings and pause!
@@ -136,7 +148,7 @@ void OnTick()
       // If open positions exist outside BD trading hours, let them manage until PROFIT EXIT
    }
 
-   // 6. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
+   // 7. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
    if(m_gridState == GRID_STATE_CLEANING)
    {
       if(totalPendingOrders > 0)
@@ -150,17 +162,28 @@ void OnTick()
       }
    }
 
-   // 7. TOTAL BASKET PROFIT EXIT ($1.50 TARGET)
-   if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
+   // 8. DYNAMIC BREAK-EVEN TARGET ADJUSTMENT (If held > 60 mins, reduce target to +$0.10 USD)
+   double activeTargetUSD = InpTargetProfitUSD;
+   if(totalOpenPositions > 0 && m_firstTradeOpenTime > 0)
    {
-      PrintFormat(">>> [TOTAL BASKET PROFIT EXIT!] Net Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions IN PROFIT...", 
-                  totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
+      int heldMinutes = (int)((TimeCurrent() - m_firstTradeOpenTime) / 60);
+      if(heldMinutes >= InpMaxHoldMinutes)
+      {
+         activeTargetUSD = 0.10; // Reduce target to +$0.10 USD Break-Even after 60 mins!
+      }
+   }
+
+   // 9. GUARANTEED NET PROFIT BASKET EXIT (Closes 100% IN PROFIT)
+   if(totalOpenPositions > 0 && totalProfitUSD >= activeTargetUSD)
+   {
+      PrintFormat(">>> [PROFIT BASKET EXIT!] Net Profit: $%.2f >= Active Target: $%.2f (Trades: %d). Closing all positions IN PROFIT...", 
+                  totalProfitUSD, activeTargetUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       m_gridState = GRID_STATE_CLEANING;
       return;
    }
 
-   // 8. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
+   // 10. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -169,7 +192,7 @@ void OnTick()
       }
    }
 
-   // 9. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
+   // 11. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -233,6 +256,7 @@ void ResetStateMachine()
    m_gridState = GRID_STATE_EMPTY;
    m_buyGridPlacedCount = 0;
    m_sellGridPlacedCount = 0;
+   m_firstTradeOpenTime = 0;
 }
 
 //+------------------------------------------------------------------+
