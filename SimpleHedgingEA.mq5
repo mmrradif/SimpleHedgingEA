@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Tight-Gap EMA Protection Dual Grid EA              |
+//| Description: EMA 20-Pip Offset Reversal Pending Dual Grid EA     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "125.00"
-#property description "Tight-Gap Dual Grid EA: Sets tight 5-10 pips gap between BuyStops and SellStops for ultra-fast reversal protection ($5 Target, $5000 Max DD)"
+#property version   "126.00"
+#property description "EMA 20-Pip Offset Reversal Pending Dual Grid EA: Uses 9/21 EMA trend direction and sets 20-pip offset reversal pending orders for peak protection ($5 Target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -28,13 +28,13 @@ input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direc
 input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
 input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
 
-input group "=== Tight-Gap Grid & Lot Settings ==="
+input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
-input int      InpReversalOffsetPoints = 50;      // Tight Reversal Gap (50 Points = 5 Pips Gap Between Buy & Sell Grids)
+input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
 
 input group "=== Profit Target Settings ==="
 input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
@@ -87,7 +87,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Tight-Gap Dual Grid EA v125.0 Initialized (5 Pips Gap). Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] EMA 20-Pip Offset Dual Grid EA v126.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -209,12 +209,14 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Setup Tight-Gap Dual Grid (Configurable 5 Pips Gap)              |
-//| BuyStops start AT M1 High                                       |
-//| SellStops start EXACTLY InpReversalOffsetPoints (5 pips) below   |
+//| Setup EMA-Guided 20-Pip Offset Reversal Dual Grid               |
+//| Bullish (9 EMA > 21 EMA): BuyStops at M1 High, SellStops 20 pips below |
+//| Bearish (9 EMA < 21 EMA): SellStops at M1 Low, BuyStops 20 pips above |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
+   int trendDir = GetTrendDirection();
+
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
 
@@ -225,12 +227,20 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Buy Base starts AT M1 High
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   // Sell Base starts TIGHT 5 Pips (50 Points) BELOW buyBasePrice
-   double sellBasePrice = MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
+   double buyBasePrice = 0, sellBasePrice = 0;
 
-   // 1. Place 11 BuyStops starting at M1 High (0.01 to 0.11 lot)
+   if(trendDir >= 0) // Bullish or Neutral Trend: Primary BuyStops at M1 High, Reversal SellStops EXACTLY 20 PIPS BELOW
+   {
+      buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+      sellBasePrice = MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
+   }
+   else // Bearish Trend: Primary SellStops at M1 Low, Reversal BuyStops EXACTLY 20 PIPS ABOVE
+   {
+      sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+      buyBasePrice = MathMax(sellBasePrice + InpReversalOffsetPoints * point, ask + (stopLevel + 15) * point);
+   }
+
+   // 1. Place 11 BuyStops (0.01 to 0.11 lot)
    if(m_buyGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_buyGridPlacedCount + 1;
@@ -252,7 +262,7 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // 2. Place 11 SellStops 5 Pips Below BuyStops (0.01 to 0.11 lot)
+   // 2. Place 11 SellStops 20 Pips Below (0.01 to 0.11 lot)
    if(m_sellGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_sellGridPlacedCount + 1;
