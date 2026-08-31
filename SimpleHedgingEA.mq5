@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Sleep-Free Guaranteed Execution Grid EA             |
+//| Description: Gap-Filling Interleaved Counter-Grid EA            |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "57.00"
-#property description "Sleep-Free Guaranteed Execution Grid EA (Zero Sleep Loops, Instant Backtest Liquidation)"
+#property version   "58.00"
+#property description "Gap-Filling Interleaved Counter-Grid EA (Places Counter Buy/Sell Pendings Inside the Center Gap)"
 
 #include <Trade\Trade.mqh>
 
@@ -18,6 +18,7 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Levels
 input int      InpBaseGridStepPoints  = 200;      // Base Grid Distance (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
+input int      InpGapOffsetPoints     = 50;       // Gap Counter Offset (50 Points = 5 Pips Inside Gap)
 input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
 
 input group "=== Break-Even Shield & Protection ==="
@@ -52,7 +53,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] Sleep-Free Grid EA v57.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Gap-Filling Grid EA v58.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -173,7 +174,8 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Dual 10-Level Pending Grid                                 |
+//| Setup Gap-Filling Interleaved Counter-Grid                       |
+//| (Places Buy/Sell Pendings Inside the Center Gap)                 |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -199,23 +201,38 @@ void SetupProgressivePendingGrid()
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
+   double gapOffset = InpGapOffsetPoints * point; // 50 points = 5 pips
 
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
 
-      // --- Buy Stop Grid (Upper) ---
+      // --- 1. Main Buy Stop (Going Up) ---
       double mainBuyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
       if(mainBuyPrice > ask + stopLevel * point)
       {
          PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyStop #%d", i));
       }
 
-      // --- Sell Stop Grid (Lower) ---
+      // --- 2. Counter Sell Stop Inside Gap (5 pips below Buy Stop) ---
+      double gapSellPrice = NormalizeDouble(mainBuyPrice - gapOffset, _Digits);
+      if(gapSellPrice < bid - stopLevel * point && gapSellPrice > 0)
+      {
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, gapSellPrice, StringFormat("GapSell #%d", i));
+      }
+
+      // --- 3. Main Sell Stop (Going Down) ---
       double mainSellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
       if(mainSellPrice < bid - stopLevel * point)
       {
          PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellStop #%d", i));
+      }
+
+      // --- 4. Counter Buy Stop Inside Gap (5 pips above Sell Stop) ---
+      double gapBuyPrice = NormalizeDouble(mainSellPrice + gapOffset, _Digits);
+      if(gapBuyPrice > ask + stopLevel * point)
+      {
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, gapBuyPrice, StringFormat("GapBuy #%d", i));
       }
 
       cumulativeBuyOffset += currentStepDistance;
