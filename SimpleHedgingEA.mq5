@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: January Trend-Filtered & Basket Trailing EA         |
+//| Description: Grid EA with Basket Trailing Profit Lock-In         |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "44.00"
-#property description "January Trend-Shield Grid EA (M1 50-EMA Trend Filter & Basket Trailing Break-Even)"
+#property version   "45.00"
+#property description "Pure Pending Grid EA (0.01-0.10 Lot) with Basket Trailing Profit Lock-In (EMA Filter Removed)"
 
 #include <Trade\Trade.mqh>
 
@@ -20,9 +20,7 @@ input int      InpBaseGridStepPoints  = 250;      // Base Distance Between Level
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Original 1.20)
 input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Close All)
 
-input group "=== January Trend Shield & Basket Trailing ==="
-input bool     InpUseTrendFilter      = true;     // M1 50-EMA Trend Filter (Prevents Counter-Trend Grid Traps)
-input int      InpEMAPeriod           = 50;       // EMA Trend Period (50 M1 Bars)
+input group "=== Basket Trailing & Risk Control ==="
 input bool     InpEnableBasketTrailing= true;     // Lock-in Profit at Break-Even when P&L >= $1.00
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
@@ -33,7 +31,6 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
-int            m_emaHandle;
 double         m_peakBasketProfit;
 
 //+------------------------------------------------------------------+
@@ -50,15 +47,9 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   m_emaHandle = iMA(_Symbol, PERIOD_M1, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
-   if(m_emaHandle == INVALID_HANDLE)
-   {
-      Print("Failed to create 50-EMA indicator handle!");
-   }
-
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] January Trend Shield EA v44.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Pure Grid EA v45.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -68,7 +59,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   if(m_emaHandle != INVALID_HANDLE) IndicatorRelease(m_emaHandle);
    PrintFormat("[DEINIT] EA Deinitialized. Reason code: %d", reason);
 }
 
@@ -147,7 +137,7 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP TREND-FILTERED 10-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP PURE 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -197,7 +187,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Trend-Filtered Progressive Pending Grid (10 Orders)        |
+//| Setup Pure Progressive Pending Grid (10 Orders: Buy & Sell)       |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -210,21 +200,6 @@ void SetupProgressivePendingGrid()
    long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
-
-   // Determine M1 50-EMA Trend Direction
-   bool allowBuy = true;
-   bool allowSell = true;
-
-   if(InpUseTrendFilter && m_emaHandle != INVALID_HANDLE)
-   {
-      double emaVal[];
-      ArraySetAsSeries(emaVal, true);
-      if(CopyBuffer(m_emaHandle, 0, 0, 1, emaVal) > 0)
-      {
-         if(bid > emaVal[0]) allowSell = false; // Only place BUY pendings during Uptrend
-         if(ask < emaVal[0]) allowBuy = false;  // Only place SELL pendings during Downtrend
-      }
-   }
 
    DeleteAllPendingOrdersGuaranteed();
 
@@ -239,35 +214,29 @@ void SetupProgressivePendingGrid()
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 1. Place 10 BUY STOP Orders if Bullish Trend
-   if(allowBuy)
+   // 1. Place 10 BUY STOP Orders
+   for(int i = 1; i <= stepCount; i++)
    {
-      for(int i = 1; i <= stepCount; i++)
-      {
-         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-         double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
+      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+      double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop Trend");
-         cumulativeBuyOffset += currentStepDistance;
-         currentStepDistance *= InpSpacingMultiplier;
-      }
+      PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop 0.01-0.10");
+      cumulativeBuyOffset += currentStepDistance;
+      currentStepDistance *= InpSpacingMultiplier;
    }
 
    // Reset step distance for Sell grid
    currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 2. Place 10 SELL STOP Orders if Bearish Trend
-   if(allowSell)
+   // 2. Place 10 SELL STOP Orders
+   for(int i = 1; i <= stepCount; i++)
    {
-      for(int i = 1; i <= stepCount; i++)
-      {
-         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-         double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
+      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+      double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop Trend");
-         cumulativeSellOffset += currentStepDistance;
-         currentStepDistance *= InpSpacingMultiplier;
-      }
+      PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop 0.01-0.10");
+      cumulativeSellOffset += currentStepDistance;
+      currentStepDistance *= InpSpacingMultiplier;
    }
 }
 
