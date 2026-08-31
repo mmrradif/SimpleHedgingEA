@@ -2,14 +2,24 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 20-Pip Anti-Block 11-Counter Hedging Grid EA        |
+//| Description: Clean State Machine Dual Grid EA (Zero Loop Trap)   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "78.00"
-#property description "20-Pip Anti-Block 11-Counter Hedging Grid EA (11 Buy & 11 Sell Initial Pendings + 20-Pip 11 Counter Pendings - Zero MT5 Block)"
+#property version   "79.00"
+#property description "Clean State Machine Dual Grid EA (Zero Cancel/Replace Loops - 100% Clean Grid Execution)"
 
 #include <Trade\Trade.mqh>
+
+//--- Enums
+enum ENUM_GRID_STATE
+{
+   GRID_STATE_EMPTY,
+   GRID_STATE_PLACING_INITIAL,
+   GRID_STATE_ACTIVE,
+   GRID_STATE_PLACING_COUNTER,
+   GRID_STATE_CLEANING
+};
 
 //--- Input Parameters
 input group "=== Grid & Lot Settings ==="
@@ -30,11 +40,12 @@ input ulong    InpMagicNumber         = 888111;   // Magic Number
 input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
-CTrade         m_trade;
-int            m_buyGridPlacedCount;
-int            m_sellGridPlacedCount;
-int            m_buyCounterPlacedCount;
-int            m_sellCounterPlacedCount;
+CTrade           m_trade;
+ENUM_GRID_STATE  m_gridState;
+int              m_buyGridPlacedCount;
+int              m_sellGridPlacedCount;
+int              m_buyCounterPlacedCount;
+int              m_sellCounterPlacedCount;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -50,9 +61,9 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
    
-   ResetCounters();
+   ResetStateMachine();
 
-   PrintFormat("[INIT] 20-Pip Anti-Block Grid EA v78.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Clean State Machine Dual Grid EA v79.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -83,17 +94,18 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // Reset tracking counters when no positions and no pendings exist
-   if(totalOpenPositions == 0 && totalPendingOrders == 0)
+   // 3. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
+   if(m_gridState == GRID_STATE_CLEANING)
    {
-      ResetCounters();
-   }
-
-   // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick to prevent MT5 OrderDelete blocks)
-   if(totalOpenPositions == 0 && totalPendingOrders > 0)
-   {
-      DeleteOnePendingOrderPaced();
-      return;
+      if(totalPendingOrders > 0)
+      {
+         DeleteOnePendingOrderPaced();
+         return;
+      }
+      else
+      {
+         ResetStateMachine();
+      }
    }
 
    // 4. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
@@ -102,18 +114,31 @@ void OnTick()
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
-      ResetCounters();
+      m_gridState = GRID_STATE_CLEANING;
       return;
    }
 
-   // 5. PACED INITIAL 11 BUY STOPS & 11 SELL STOPS PLACEMENT (1 Order Per Tick Max - Anti-Block)
-   if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11))
+   // 5. STATE 2: EMPTY STATE -> START PLACEMENT
+   if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
-      SetupPacedInitialDualGrid();
-      return;
+      m_gridState = GRID_STATE_PLACING_INITIAL;
    }
 
-   // 6. PACED ON-DEMAND 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick Max - Anti-Block)
+   // 6. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
+   if(m_gridState == GRID_STATE_PLACING_INITIAL)
+   {
+      if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
+      {
+         SetupPacedInitialDualGrid();
+         return;
+      }
+      else
+      {
+         m_gridState = GRID_STATE_ACTIVE;
+      }
+   }
+
+   // 7. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
    if(totalOpenPositions > 0)
    {
       ManagePaced11CounterHedges(buyCount, sellCount);
@@ -121,10 +146,11 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Reset Placement Counters                                         |
+//| Reset State Machine Counters                                     |
 //+------------------------------------------------------------------+
-void ResetCounters()
+void ResetStateMachine()
 {
+   m_gridState = GRID_STATE_EMPTY;
    m_buyGridPlacedCount = 0;
    m_sellGridPlacedCount = 0;
    m_buyCounterPlacedCount = 0;
@@ -559,7 +585,7 @@ bool CheckEquityProtection()
                      floatingLossUSD, InpMaxDrawdownUSD);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
-         ResetCounters();
+         ResetStateMachine();
          return true;
       }
 
@@ -569,7 +595,7 @@ bool CheckEquityProtection()
          PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
-         ResetCounters();
+         ResetStateMachine();
          return true;
       }
    }
