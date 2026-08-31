@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Clean State Machine Dual Grid EA (Default $5000 DD) |
+//| Description: Clean State Machine Dual Grid EA ($5000 Fresh Cap)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "80.00"
-#property description "Clean State Machine Dual Grid EA (Hardcoded Default $5000.00 Max USD Drawdown Limit)"
+#property version   "81.00"
+#property description "Clean State Machine Dual Grid EA (Fresh $5000.00 Max USD Drawdown Parameter Name)"
 
 #include <Trade\Trade.mqh>
 
@@ -32,8 +32,8 @@ input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Dis
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Risk Control & Drawdown Cap ==="
-input double   InpMaxDrawdownUSD      = 5000.0;   // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
-input double   InpMaxDrawdownPercent  = 90.0;     // Emergency Equity Protection (%)
+input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
+input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -63,8 +63,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Clean State Machine Dual Grid EA v80.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxDrawdownUSD);
+   PrintFormat("[INIT] Clean State Machine Dual Grid EA v81.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -579,10 +579,10 @@ bool CheckEquityProtection()
       double drawdownPercent = (floatingLossUSD / balance) * 100.0;
 
       // 1. Hard Max USD Drawdown Cap ($5000.00)
-      if(InpMaxDrawdownUSD > 0 && floatingLossUSD >= InpMaxDrawdownUSD)
+      if(InpMaxAllowedDrawdownUSD > 0 && floatingLossUSD >= InpMaxAllowedDrawdownUSD)
       {
          PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Instant liquidation...", 
-                     floatingLossUSD, InpMaxDrawdownUSD);
+                     floatingLossUSD, InpMaxAllowedDrawdownUSD);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
          ResetStateMachine();
