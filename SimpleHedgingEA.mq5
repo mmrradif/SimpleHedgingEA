@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 20-Pip Spacing & Inverted Refill Sequence EA        |
+//| Description: 30-Pip Spacing & BD 08:00-20:00 Time Window EA     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "136.00"
-#property description "20-Pip Spacing EA: Sets exact 20 pips gap between all grid levels and uses inverted lot sequence (0.11 -> 0.01) for refill orders to prevent losses ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "137.00"
+#property description "30-Pip Spacing EA: Exact 30 pips gap between all orders, trades ONLY between 08:00 AM - 08:00 PM BD Time, liquidates clean at 08:00 PM ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -31,24 +31,25 @@ input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direc
 input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
 input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
 
-input group "=== Grid & Lot Settings ==="
+input group "=== 30-Pip Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input int      InpBaseGridStepPoints  = 200;      // Base Grid Step (200 Points = EXACT 20 Pips Gap Between Orders)
-input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
+input int      InpBaseGridStepPoints  = 300;      // Base Grid Step (300 Points = EXACT 30 Pips Gap Between All Orders)
+input int      InpReversalOffsetPoints = 300;     // Reversal Pending Offset (300 Points = EXACT 30 Pips Offset)
 input double   InpMaxTotalVolumeCapLot = 3.96;    // Hard Total Volume Cap (3.96 Lots = 6 Full Cycles Cap)
 
 input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
 input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
 
-input group "=== Trading Schedule & Filters ==="
-input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for 24/7 execution)
-input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
-input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
+input group "=== BD Time Schedule & EOD Liquidation ==="
+input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter (True for BD Time Window)
+input int      InpBDStartHour         = 8;        // Start Trading Hour (08:00 AM BD Time)
+input int      InpBDEndHour           = 20;       // End Trading Hour (08:00 PM BD Time / 20:00 BD Time)
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 minus Broker GMT+3 = 3 Hours)
+input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close AT 08:00 PM ONLY IF PROFITABLE / BREAKEVEN
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -80,7 +81,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] 20-Pip Spacing & Inverted Refill EA v136.0 Initialized. Step: %d Points (20 Pips), Max DD: $%.2f", 
+   PrintFormat("[INIT] 30-Pip Spacing & BD 08:00-20:00 Schedule EA v137.0 Initialized. Grid Step: %d Points (30 Pips), Max DD: $%.2f", 
                InpBaseGridStepPoints, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -135,10 +136,64 @@ void OnTick()
       return;
    }
 
-   // 5. CONTINUOUS INVERTED REFILL CONTROLLED UP TO VOLUME CAP
+   // 5. BANGLADESH TIME NIGHT EOD CLEAN CLOSE AT 08:00 PM (20:00 BD Time)
+   if(InpUseTimeWindow && IsEODCloseTime())
+   {
+      if(totalOpenPositions > 0 && totalProfitUSD >= 0.0) // ONLY IF PROFITABLE OR BREAKEVEN
+      {
+         PrintFormat(">>> [EOD NIGHT CLOSE 08:00 PM BD TIME] Net Profit $%.2f. Closing all positions & pendings clean...", totalProfitUSD);
+         CloseAllPositionsGuaranteed();
+         DeleteAllPendingOrdersGuaranteed();
+         ResetStateMachine();
+         return;
+      }
+      else if(totalOpenPositions == 0 && totalPendingOrders > 0)
+      {
+         DeleteAllPendingOrdersGuaranteed();
+         return;
+      }
+   }
+
+   // 6. CONTINUOUS INVERTED REFILL CONTROLLED WITHIN BD TRADING HOURS (08:00 AM - 08:00 PM BD TIME)
    if((!InpUseTimeWindow || IsWithinBDTradingHours()) && totalLot < InpMaxTotalVolumeCapLot)
    {
       RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
+   }
+   else if(InpUseTimeWindow && !IsWithinBDTradingHours() && totalOpenPositions == 0 && totalPendingOrders > 0)
+   {
+      // Delete all pendings outside BD trading hours so no pending hangs overnight
+      DeleteAllPendingOrdersGuaranteed();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if current BD time is EOD Liquidation Time (20:00 BD Time) |
+//+------------------------------------------------------------------+
+bool IsEODCloseTime()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
+   return (bdHour >= 20 && dt.min >= 0);
+}
+
+//+------------------------------------------------------------------+
+//| Convert Broker Time to BD Time & Check Hours (08:00 AM - 20:00 PM)|
+//+------------------------------------------------------------------+
+bool IsWithinBDTradingHours()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+
+   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
+
+   if(InpBDStartHour <= InpBDEndHour)
+   {
+      return (bdHour >= InpBDStartHour && bdHour < InpBDEndHour);
+   }
+   else
+   {
+      return (bdHour >= InpBDStartHour || bdHour < InpBDEndHour);
    }
 }
 
@@ -165,7 +220,7 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops with 20-Pip Spacing & Inverted Lots |
+//| Refill Missing Pending Stops with 30-Pip Spacing & Inverted Lots |
 //+------------------------------------------------------------------+
 void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
 {
@@ -184,13 +239,13 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
    double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
    double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Refill BuyStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
+   // Refill BuyStops with 30 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
    if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeBuyStops + 1;
       // Inverted Lot Sequence: 0.11 -> 0.01
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 30 Pips Spacing
       double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
       if(price > ask + stopLevel * point)
@@ -200,13 +255,13 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
       return; // 1 Order per tick!
    }
 
-   // Refill SellStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
+   // Refill SellStops with 30 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
    if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeSellStops + 1;
       // Inverted Lot Sequence: 0.11 -> 0.01
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 30 Pips Spacing
       double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
       if(price < bid - stopLevel * point)
@@ -214,26 +269,6 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
          PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellRefill #%d", levelIndex));
       }
       return; // 1 Order per tick!
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Convert Broker Time to BD Time & Check Hours                     |
-//+------------------------------------------------------------------+
-bool IsWithinBDTradingHours()
-{
-   MqlDateTime dt;
-   TimeCurrent(dt);
-
-   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
-
-   if(InpBDStartHour <= InpBDEndHour)
-   {
-      return (bdHour >= InpBDStartHour && bdHour < InpBDEndHour);
-   }
-   else
-   {
-      return (bdHour >= InpBDStartHour || bdHour < InpBDEndHour);
    }
 }
 
