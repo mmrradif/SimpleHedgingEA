@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Continuous Refreshing Dual Grid EA                  |
+//| Description: Dynamic Continuous Refill Dual Grid EA             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "132.00"
-#property description "Continuous Refreshing Dual Grid EA: Automatically places 10 new BuyStops above and 10 new SellStops below whenever price swings, continuously catching reversals ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "133.00"
+#property description "Dynamic Continuous Refill Dual Grid EA: Always maintains 11 active BuyStops above and 11 active SellStops below. Refills missing stops on EVERY tick ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -56,8 +56,6 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 //--- Global Variables
 CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
-int              m_primaryGridPlacedCount;
-int              m_reversalGridPlacedCount;
 int              m_fastEmaHandle;
 int              m_slowEmaHandle;
 
@@ -81,7 +79,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Continuous Refreshing Dual Grid EA v132.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Dynamic Continuous Refill Dual Grid EA v133.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpProfitPerMicroLot, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -136,34 +134,10 @@ void OnTick()
       return;
    }
 
-   // 5. CONTINUOUS RE-ENTRY LOOP: If pending orders drop below 10 levels, automatically top-up new Buy & Sell Stops!
-   if(totalOpenPositions > 0 && (buyStopCount < 5 || sellStopCount < 5))
+   // 5. ALWAYS MAINTAIN & REFILL ACTIVE PENDING STOPS (11 BuyStops & 11 SellStops)
+   if(!InpUseTimeWindow || IsWithinBDTradingHours())
    {
-      // Refill pending orders around current market price so bounce-backs are caught!
-      SetupPacedInitialDualGrid();
-   }
-
-   // 6. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
-   if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
-   {
-      if(!InpUseTimeWindow || IsWithinBDTradingHours())
-      {
-         m_gridState = GRID_STATE_PLACING_INITIAL;
-      }
-   }
-
-   // 7. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
-   if(m_gridState == GRID_STATE_PLACING_INITIAL)
-   {
-      if(m_primaryGridPlacedCount < InpMaxGridLevels || m_reversalGridPlacedCount < InpMaxGridLevels)
-      {
-         SetupPacedInitialDualGrid();
-         return;
-      }
-      else
-      {
-         m_gridState = GRID_STATE_ACTIVE;
-      }
+      RefillMissingPendingStopsPaced(buyStopCount, sellStopCount);
    }
 }
 
@@ -190,17 +164,11 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Setup Continuous Refreshing Dual Grid                            |
-//| Primary Grid: 0.01 -> 0.11 Lot                                  |
-//| Reversal Grid: 0.11 -> 0.01 Lot (Reverse Lot Order)             |
+//| Refill Missing Pending Stops continuously on Every Tick         |
+//| Maintains 11 BuyStops and 11 SellStops relative to current Ask/Bid|
 //+------------------------------------------------------------------+
-void SetupPacedInitialDualGrid()
+void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops)
 {
-   int trendDir = GetTrendDirection();
-
-   double m1High = 0, m1Low = 0;
-   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
-
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -208,70 +176,41 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   ENUM_ORDER_TYPE primaryType = (trendDir >= 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
-   ENUM_ORDER_TYPE reversalType = (trendDir >= 0) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
+   int trendDir = GetTrendDirection();
 
-   double primaryBasePrice = 0, reversalBasePrice = 0;
+   double m1High = 0, m1Low = 0;
+   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
 
-   if(trendDir >= 0) // Bullish Trend: BuyStops at M1 High (0.01->0.11), SellStops 20 pips below (0.11->0.01 REVERSE)
-   {
-      primaryBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-      reversalBasePrice = MathMin(primaryBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
-   }
-   else // Bearish Trend: SellStops at M1 Low (0.01->0.11), BuyStops 20 pips above (0.11->0.01 REVERSE)
-   {
-      primaryBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
-      reversalBasePrice = MathMax(primaryBasePrice + InpReversalOffsetPoints * point, ask + (stopLevel + 15) * point);
-   }
+   double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
+   double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // 1. Primary Grid Placement (0.01 -> 0.11 Lot Order)
-   if(m_primaryGridPlacedCount < InpMaxGridLevels)
+   // Refill BuyStops if less than 11 active
+   if(activeBuyStops < InpMaxGridLevels)
    {
-      int i = m_primaryGridPlacedCount + 1;
+      int i = activeBuyStops + 1;
       double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = 0;
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
-      if(primaryType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(primaryBasePrice + cumulativeOffset, _Digits);
-      else price = NormalizeDouble(primaryBasePrice - cumulativeOffset, _Digits);
-
-      if((primaryType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
-         (primaryType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
+      if(price > ask + stopLevel * point)
       {
-         if(PlacePendingOrderSafe(primaryType, lot, price, StringFormat("PrimaryZone #%d", i)))
-         {
-            m_primaryGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_primaryGridPlacedCount++;
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyRefill #%d", i));
       }
       return; // 1 Order per tick!
    }
 
-   // 2. Reversal Safety Grid Placement (REVERSE LOT ORDER: 0.11 -> 0.01)
-   if(m_reversalGridPlacedCount < InpMaxGridLevels)
+   // Refill SellStops if less than 11 active
+   if(activeSellStops < InpMaxGridLevels)
    {
-      int i = m_reversalGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep);
+      int i = activeSellStops + 1;
+      // Inverted lot for reversal safety stops if bullish, normal if bearish
+      double lot = (trendDir >= 0) ? NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep) : NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = 0;
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
-      if(reversalType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(reversalBasePrice + cumulativeOffset, _Digits);
-      else price = NormalizeDouble(reversalBasePrice - cumulativeOffset, _Digits);
-
-      if((reversalType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
-         (reversalType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
+      if(price < bid - stopLevel * point)
       {
-         if(PlacePendingOrderSafe(reversalType, lot, price, StringFormat("ReversalSafety #%d", i)))
-         {
-            m_reversalGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_reversalGridPlacedCount++;
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellRefill #%d", i));
       }
       return; // 1 Order per tick!
    }
@@ -302,9 +241,7 @@ bool IsWithinBDTradingHours()
 //+------------------------------------------------------------------+
 void ResetStateMachine()
 {
-   m_gridState               = GRID_STATE_EMPTY;
-   m_primaryGridPlacedCount  = 0;
-   m_reversalGridPlacedCount = 0;
+   m_gridState = GRID_STATE_EMPTY;
 }
 
 //+------------------------------------------------------------------+
