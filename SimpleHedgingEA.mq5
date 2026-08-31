@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Bulletproof Server Time Window EA (08:00-20:00 BD) |
+//| Description: Explicit 20 Pips ($2.00 Gold Price Step) EA        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "140.00"
-#property description "Bulletproof Time Window EA: Trades strictly between 05:00-17:00 Broker Server Time (08:00 AM - 08:00 PM BD Time). Deletes all pendings and closes profit clean at 08:00 PM BD Time ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "141.00"
+#property description "Explicit 20 Pips EA: Exact $2.00 Gold price step (20 Pips = e.g. 2602.00 -> 2604.00), BD 08:00 AM - 08:00 PM time window ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -31,13 +31,13 @@ input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direc
 input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
 input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
 
-input group "=== 20-Pip Grid & Lot Settings ==="
+input group "=== Explicit 20 Pips ($2.00 Gold Step) & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input int      InpBaseGridStepPoints  = 200;      // Base Grid Step (200 Points = EXACT 20 Pips Gap Between Orders)
-input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
+input double   InpGridStepPips        = 20.0;     // EXACT 20 PIPS GAP ($2.00 Gold Price Difference e.g. 2602 -> 2604)
+input double   InpReversalOffsetPips  = 20.0;     // EXACT 20 PIPS REVERSAL OFFSET ($2.00 Gold Price Offset)
 input double   InpMaxTotalVolumeCapLot = 3.96;    // Hard Total Volume Cap (3.96 Lots = 6 Full Cycles Cap)
 
 input group "=== Total Max Drawdown Protection ==="
@@ -79,8 +79,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Bulletproof Time Window EA v140.0 Initialized. Server Window: %02d:00-%02d:00 (BD 08:00-20:00), Max DD: $%.2f", 
-               InpServerStartHour, InpServerEndHour, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Explicit 20 Pips EA v141.0 Initialized. Grid Step: %.1f Pips ($%.2f Price Gap), Max DD: $%.2f", 
+               InpGridStepPips, InpGridStepPips * 0.10, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -159,7 +159,7 @@ void OnTick()
       return; // Do NOT place or refill any new trades outside trading window!
    }
 
-   // 6. INSIDE TRADING HOURS (BD 08:00 AM - 08:00 PM): CONTINUOUS REFILL
+   // 6. INSIDE TRADING HOURS (BD 08:00 AM - 08:00 PM): CONTINUOUS REFILL WITH 20 PIPS ($2.00 GOLD PRICE STEP)
    if(insideTradingWindow && totalLot < InpMaxTotalVolumeCapLot)
    {
       RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
@@ -210,7 +210,7 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops with 20-Pip Spacing & Inverted Lots |
+//| Refill Missing Pending Stops with Explicit 20 Pips ($2.00 Price) |
 //+------------------------------------------------------------------+
 void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
 {
@@ -226,17 +226,21 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
 
-   double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
-   double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
+   // 1 Pip on Gold = $0.10 price difference -> 20 Pips = $2.00 price difference (e.g. 2602.00 -> 2604.00)
+   double stepPriceOffset = InpGridStepPips * 0.10;
+   double reversalPriceOffset = InpReversalOffsetPips * 0.10;
 
-   // Refill BuyStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
+   double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + reversalPriceOffset);
+   double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - reversalPriceOffset, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
+
+   // Refill BuyStops with EXACT 20 Pips ($2.00 Gold Price Gap e.g. 2602 -> 2604 -> 2606)
    if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeBuyStops + 1;
       // Inverted Lot Sequence: 0.11 -> 0.01
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
-      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
+      double cumulativePriceOffset = (levelIndex - 1) * stepPriceOffset; // EXACT $2.00 per level
+      double price = NormalizeDouble(buyBasePrice + cumulativePriceOffset, _Digits);
 
       if(price > ask + stopLevel * point)
       {
@@ -245,14 +249,14 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
       return; // 1 Order per tick!
    }
 
-   // Refill SellStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
+   // Refill SellStops with EXACT 20 Pips ($2.00 Gold Price Gap e.g. 2602 -> 2600 -> 2598)
    if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeSellStops + 1;
       // Inverted Lot Sequence: 0.11 -> 0.01
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
-      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+      double cumulativePriceOffset = (levelIndex - 1) * stepPriceOffset; // EXACT $2.00 per level
+      double price = NormalizeDouble(sellBasePrice - cumulativePriceOffset, _Digits);
 
       if(price < bid - stopLevel * point)
       {
