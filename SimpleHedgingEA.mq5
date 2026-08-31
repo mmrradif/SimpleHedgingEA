@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 20-Pip Offset Dual Grid EA (Buy & Sell Grid Alignment)|
+//| Description: 9/21 EMA Trend-Filtered 20-Pip Offset Dual Grid EA  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "120.00"
-#property description "20-Pip Offset Dual Grid EA: Places 11 BuyStops at M1 High and 11 SellStops starting 20 pips below BuyStops ($5.00 Target, $5000 Max DD)"
+#property version   "121.00"
+#property description "EMA Trend-Filtered 20-Pip Offset Dual Grid EA: Combines 9/21 EMA Trend Filter with 20-Pip Offset Dual Grid ($5.00 Target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,6 +23,11 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
+input group "=== Trend & Direction Filter ==="
+input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Filter (Trades ONLY in Trend Direction)
+input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
+input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
+
 input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
@@ -59,6 +64,8 @@ int              m_buyGridPlacedCount;
 int              m_sellGridPlacedCount;
 bool             m_buySideClosed;
 bool             m_sellSideClosed;
+int              m_fastEmaHandle;
+int              m_slowEmaHandle;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -74,10 +81,14 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
    
+   // Initialize EMA Indicators
+   m_fastEmaHandle = iMA(_Symbol, PERIOD_M1, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   m_slowEmaHandle = iMA(_Symbol, PERIOD_M1, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+
    ResetStateMachine();
 
-   PrintFormat("[INIT] 20-Pip Offset Dual Grid EA v120.0 Initialized. Target: $%.2f, Total Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] EMA Trend-Filtered 20-Pip Offset Dual Grid EA v121.0 Initialized. Target: $%.2f, EMA Filter: %s", 
+               InpTargetProfitUSD, InpUseTrendFilter ? "ENABLED (9/21 EMA)" : "DISABLED");
    return(INIT_SUCCEEDED);
 }
 
@@ -86,6 +97,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   if(m_fastEmaHandle != INVALID_HANDLE) IndicatorRelease(m_fastEmaHandle);
+   if(m_slowEmaHandle != INVALID_HANDLE) IndicatorRelease(m_slowEmaHandle);
    PrintFormat("[DEINIT] EA Deinitialized. Reason code: %d", reason);
 }
 
@@ -174,6 +187,105 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
+//| Get Trend Direction via 9/21 EMA Alignment                       |
+//| Returns: +1 for Bullish Uptrend, -1 for Bearish Downtrend, 0 Any |
+//+------------------------------------------------------------------+
+int GetTrendDirection()
+{
+   if(!InpUseTrendFilter) return 0; // Both directions allowed
+
+   double fastEma[], slowEma[];
+   ArraySetAsSeries(fastEma, true);
+   ArraySetAsSeries(slowEma, true);
+
+   if(CopyBuffer(m_fastEmaHandle, 0, 0, 2, fastEma) > 0 &&
+      CopyBuffer(m_slowEmaHandle, 0, 0, 2, slowEma) > 0)
+   {
+      if(fastEma[0] > slowEma[0]) return 1;  // Bullish Uptrend -> BUY STOPS ONLY
+      if(fastEma[0] < slowEma[0]) return -1; // Bearish Downtrend -> SELL STOPS ONLY
+   }
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Setup EMA Trend-Filtered 20-Pip Offset Dual Grid                 |
+//| BuyStops start AT M1 High                                       |
+//| SellStops start EXACTLY 20 PIPS BELOW BuyStops                  |
+//+------------------------------------------------------------------+
+void SetupPacedInitialDualGrid()
+{
+   int trendDir = GetTrendDirection();
+
+   double m1High = 0, m1Low = 0;
+   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+
+   if(ask <= 0 || bid <= 0 || point <= 0) return;
+
+   // Buy Base starts AT M1 High
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+   // Sell Base starts EXACTLY 20 Pips (200 Points) BELOW buyBasePrice
+   double sellBasePrice = MathMin(buyBasePrice - InpSellOffsetFromBuy * point, bid - (stopLevel + 15) * point);
+
+   // Place Buy Stops ONLY IF Trend is Bullish (+1) or Filter is OFF (0)
+   if((trendDir >= 0) && m_buyGridPlacedCount < InpMaxGridLevels)
+   {
+      int i = m_buyGridPlacedCount + 1;
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
+
+      if(price > ask + stopLevel * point)
+      {
+         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
+         {
+            m_buyGridPlacedCount++;
+         }
+      }
+      else
+      {
+         m_buyGridPlacedCount++;
+      }
+      return; // 1 Order per tick!
+   }
+   else if(trendDir < 0 && m_buyGridPlacedCount < InpMaxGridLevels)
+   {
+      m_buyGridPlacedCount = InpMaxGridLevels; // Skip BuyStops in Downtrend
+   }
+
+   // Place Sell Stops ONLY IF Trend is Bearish (-1) or Filter is OFF (0)
+   if((trendDir <= 0) && m_sellGridPlacedCount < InpMaxGridLevels)
+   {
+      int i = m_sellGridPlacedCount + 1;
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+
+      if(price < bid - stopLevel * point)
+      {
+         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
+         {
+            m_sellGridPlacedCount++;
+         }
+      }
+      else
+      {
+         m_sellGridPlacedCount++;
+      }
+      return; // 1 Order per tick!
+   }
+   else if(trendDir > 0 && m_sellGridPlacedCount < InpMaxGridLevels)
+   {
+      m_sellGridPlacedCount = InpMaxGridLevels; // Skip SellStops in Uptrend
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Check if current BD time is EOD Liquidation Time (21:55 BD Time) |
 //+------------------------------------------------------------------+
 bool IsEODCloseTime()
@@ -247,73 +359,6 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
             m_trade.OrderDelete(ticket);
          }
       }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Setup 20-Pip Offset Dual Grid                                    |
-//| BuyStops start AT M1 High                                       |
-//| SellStops start EXACTLY 20 PIPS BELOW BuyStops                  |
-//+------------------------------------------------------------------+
-void SetupPacedInitialDualGrid()
-{
-   double m1High = 0, m1Low = 0;
-   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
-
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-
-   if(ask <= 0 || bid <= 0 || point <= 0) return;
-
-   // Buy Base starts AT M1 High
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   // Sell Base starts EXACTLY 20 Pips (200 Points) BELOW buyBasePrice
-   double sellBasePrice = MathMin(buyBasePrice - InpSellOffsetFromBuy * point, bid - (stopLevel + 15) * point);
-
-   // Place Buy Stops up to InpMaxGridLevels (0.01 to 0.11 lot)
-   if(m_buyGridPlacedCount < InpMaxGridLevels)
-   {
-      int i = m_buyGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
-
-      if(price > ask + stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
-         {
-            m_buyGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_buyGridPlacedCount++;
-      }
-      return; // 1 Order per tick!
-   }
-
-   // Place Sell Stops starting 20 pips below BuyStops (0.01 to 0.11 lot)
-   if(m_sellGridPlacedCount < InpMaxGridLevels)
-   {
-      int i = m_sellGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
-
-      if(price < bid - stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
-         {
-            m_sellGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_sellGridPlacedCount++;
-      }
-      return; // 1 Order per tick!
    }
 }
 
