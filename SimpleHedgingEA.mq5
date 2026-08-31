@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Pure Original Dual Grid EA (BuyStops & SellStops)   |
+//| Description: Pure Instant Batch Dual Grid EA                    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "71.00"
-#property description "Pure Original Dual Grid EA (11 BuyStops in Buy Zone + 11 SellStops in Sell Zone - Zero Complex Hedging Loops)"
+#property version   "72.00"
+#property description "Pure Instant Batch Dual Grid EA (Places All 11 BuyStops & 11 SellStops Instantly in 1 Tick)"
 
 #include <Trade\Trade.mqh>
 
@@ -30,8 +30,6 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
-int            m_buyGridPlacedCount;
-int            m_sellGridPlacedCount;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -46,10 +44,8 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
-   
-   ResetCounters();
 
-   PrintFormat("[INIT] Pure Original Dual Grid EA v71.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Pure Instant Batch Dual Grid EA v72.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -80,66 +76,28 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // Reset tracking counters when no positions and no pendings exist
-   if(totalOpenPositions == 0 && totalPendingOrders == 0)
-   {
-      ResetCounters();
-   }
-
-   // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick)
-   if(totalOpenPositions == 0 && totalPendingOrders > 0)
-   {
-      DeleteOnePendingOrderPaced();
-      return;
-   }
-
-   // 4. GUARANTEED TARGET PROFIT EXIT ($2.00 TARGET)
+   // 3. GUARANTEED TARGET PROFIT EXIT ($2.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
-      ResetCounters();
+      DeleteAllPendingOrdersGuaranteed();
+      SetupProgressivePendingGrid();
       return;
    }
 
-   // 5. PACED 11-LEVEL INITIAL GRID PLACEMENT (1 Order Per Tick Max)
-   if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11))
+   // 4. SETUP INSTANT BATCH DUAL GRID (When no positions and no pendings exist)
+   if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
-      SetupPaced11InitialGrid();
-      return;
+      SetupProgressivePendingGrid();
    }
 }
 
 //+------------------------------------------------------------------+
-//| Reset Placement Counters                                         |
+//| Setup Instant Batch 11-Level Dual Grid (Places All Orders at Once)|
 //+------------------------------------------------------------------+
-void ResetCounters()
-{
-   m_buyGridPlacedCount = 0;
-   m_sellGridPlacedCount = 0;
-}
-
-//+------------------------------------------------------------------+
-//| Paced Anti-Spam Single Order Deletion (1 Order Delete Per Tick)  |
-//+------------------------------------------------------------------+
-void DeleteOnePendingOrderPaced()
-{
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
-      {
-         m_trade.OrderDelete(ticket);
-         return; // 1 Deletion per tick!
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Setup Paced 11-Level Initial Pending Grid (1 Order Per Tick)     |
-//+------------------------------------------------------------------+
-void SetupPaced11InitialGrid()
+void SetupProgressivePendingGrid()
 {
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(30, m1High, m1Low);
@@ -151,72 +109,41 @@ void SetupPaced11InitialGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
+   DeleteAllPendingOrdersGuaranteed();
+
    double startLot = 0.01;
    double lotStep = 0.01;
+   int stepCount = 11; // Exactly 11 Levels per direction
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Place 11 Buy Stops in Buy Zone (1 per tick: 0.01 to 0.11)
-   if(m_buyGridPlacedCount < 11)
-   {
-      int i = m_buyGridPlacedCount + 1;
-      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-      double cumulativeOffset = GetCumulativeOffset(i);
-      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
-
-      if(price > ask + stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
-         {
-            m_buyGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_buyGridPlacedCount++;
-      }
-      return;
-   }
-
-   // Place 11 Sell Stops in Sell Zone (1 per tick: 0.01 to 0.11)
-   if(m_sellGridPlacedCount < 11)
-   {
-      int i = m_sellGridPlacedCount + 1;
-      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-      double cumulativeOffset = GetCumulativeOffset(i);
-      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
-
-      if(price < bid - stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
-         {
-            m_sellGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_sellGridPlacedCount++;
-      }
-      return;
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Grid Distance Offset                                   |
-//+------------------------------------------------------------------+
-double GetCumulativeOffset(int level)
-{
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double cumulativeOffset = 0;
+   double cumulativeBuyOffset = 0;
+   double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   for(int k = 1; k < level; k++)
+   for(int i = 1; i <= stepCount; i++)
    {
-      cumulativeOffset += currentStepDistance;
+      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+
+      // --- Buy Stop Grid (Going Up: 0.01 -> 0.11) ---
+      double mainBuyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
+      if(mainBuyPrice > ask + stopLevel * point)
+      {
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyZone #%d", i));
+      }
+
+      // --- Sell Stop Grid (Going Down: 0.01 -> 0.11) ---
+      double mainSellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
+      if(mainSellPrice < bid - stopLevel * point)
+      {
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellZone #%d", i));
+      }
+
+      cumulativeBuyOffset += currentStepDistance;
+      cumulativeSellOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
-   return cumulativeOffset;
 }
 
 //+------------------------------------------------------------------+
@@ -355,7 +282,7 @@ bool CloseAllPositionsGuaranteed()
          }
       }
    }
-   return false;
+  return false;
 }
 
 //+------------------------------------------------------------------+
@@ -458,7 +385,6 @@ bool CheckEquityProtection()
                      floatingLossUSD, InpMaxDrawdownUSD);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
-         ResetCounters();
          return true;
       }
 
@@ -468,7 +394,6 @@ bool CheckEquityProtection()
          PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
-         ResetCounters();
          return true;
       }
    }
