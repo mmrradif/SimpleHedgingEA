@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Pure Instant Batch Dual Grid EA                    |
+//| Description: 1.5x Weighted 11-Counter Hedging Grid EA           |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "72.00"
-#property description "Pure Instant Batch Dual Grid EA (Places All 11 BuyStops & 11 SellStops Instantly in 1 Tick)"
+#property version   "73.00"
+#property description "1.5x Weighted 11-Counter Hedging Grid EA (Places 11 Counter Pendings 50 Pips Away with 1.5x Lot Multiplier When Position Opens)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,10 +15,11 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Levels (0.01 -> 0.11)
-input int      InpBaseGridStepPoints  = 250;      // Base Grid Step Distance (250 Points = 25 Pips)
+input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplier (1.5x)
+input int      InpBaseGridStepPoints  = 250;      // Base Grid Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
+input int      InpCounterOffsetPoints = 500;      // Counter Hedge Offset (500 Points = 50 Pips Below/Above Entry)
+input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
@@ -30,6 +31,8 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
+int            m_buyCounterPlacedCount;
+int            m_sellCounterPlacedCount;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -44,8 +47,10 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
+   
+   ResetCounters();
 
-   PrintFormat("[INIT] Pure Instant Batch Dual Grid EA v72.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 1.5x Weighted 11-Counter Grid EA v73.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -76,28 +81,49 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. GUARANTEED TARGET PROFIT EXIT ($2.00 TARGET)
+   // Reset tracking counters when no positions and no pendings exist
+   if(totalOpenPositions == 0 && totalPendingOrders == 0)
+   {
+      ResetCounters();
+   }
+
+   // 3. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       DeleteAllPendingOrdersGuaranteed();
-      SetupProgressivePendingGrid();
+      ResetCounters();
       return;
    }
 
-   // 4. SETUP INSTANT BATCH DUAL GRID (When no positions and no pendings exist)
+   // 4. SETUP INITIAL 11 BUY STOPS & 11 SELL STOPS (When no positions & pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
-      SetupProgressivePendingGrid();
+      SetupInitialDualGrid();
+   }
+
+   // 5. ON-DEMAND 11 COUNTER HEDGES (Places 11 counter orders 50 pips away with 1.5x multiplier)
+   if(totalOpenPositions > 0)
+   {
+      Manage11CounterHedges(buyCount, sellCount);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Setup Instant Batch 11-Level Dual Grid (Places All Orders at Once)|
+//| Reset Placement Counters                                         |
 //+------------------------------------------------------------------+
-void SetupProgressivePendingGrid()
+void ResetCounters()
+{
+   m_buyCounterPlacedCount = 0;
+   m_sellCounterPlacedCount = 0;
+}
+
+//+------------------------------------------------------------------+
+//| Setup Initial Dual Grid (11 BuyStops & 11 SellStops)             |
+//+------------------------------------------------------------------+
+void SetupInitialDualGrid()
 {
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(30, m1High, m1Low);
@@ -113,7 +139,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11; // Exactly 11 Levels per direction
+   int stepCount = 11;
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -144,6 +170,95 @@ void SetupProgressivePendingGrid()
       cumulativeSellOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
+}
+
+//+------------------------------------------------------------------+
+//| Manage 11 Counter Hedges (50 Pips Away, 1.5x Volume Multiplier)  |
+//+------------------------------------------------------------------+
+void Manage11CounterHedges(int buyCount, int sellCount)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double offset50Pips = InpCounterOffsetPoints * point; // 500 points = 50 pips
+
+   double startLot = 0.01;
+   double lotStep = 0.01;
+   int stepCount = 11;
+
+   // 1. Buy Position Triggered -> Place 11 Counter SellStops 50 pips BELOW Buy Entry with 1.5x Volume
+   if(buyCount > 0 && m_sellCounterPlacedCount < stepCount)
+   {
+      double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
+      if(firstBuyPrice > 0)
+      {
+         double sellBasePrice = firstBuyPrice - offset50Pips;
+         double cumulativeOffset = 0;
+         double currentStepDistance = InpBaseGridStepPoints * point;
+
+         for(int i = 1; i <= stepCount; i++)
+         {
+            double baseLot = startLot + (i - 1) * lotStep;
+            double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
+            double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+
+            if(price < bid - stopLevel * point && price > 0)
+            {
+               PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, weightedLot, price, StringFormat("CounterSell #%d", i));
+            }
+            cumulativeOffset += currentStepDistance;
+            currentStepDistance *= InpSpacingMultiplier;
+         }
+         m_sellCounterPlacedCount = stepCount;
+      }
+   }
+
+   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 50 pips ABOVE Sell Entry with 1.5x Volume
+   if(sellCount > 0 && m_buyCounterPlacedCount < stepCount)
+   {
+      double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
+      if(firstSellPrice > 0)
+      {
+         double buyBasePrice = firstSellPrice + offset50Pips;
+         double cumulativeOffset = 0;
+         double currentStepDistance = InpBaseGridStepPoints * point;
+
+         for(int i = 1; i <= stepCount; i++)
+         {
+            double baseLot = startLot + (i - 1) * lotStep;
+            double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
+            double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
+
+            if(price > ask + stopLevel * point)
+            {
+               PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, weightedLot, price, StringFormat("CounterBuy #%d", i));
+            }
+            cumulativeOffset += currentStepDistance;
+            currentStepDistance *= InpSpacingMultiplier;
+         }
+         m_buyCounterPlacedCount = stepCount;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get First Open Position Price by Type                            |
+//+------------------------------------------------------------------+
+double GetFirstPositionOpenPrice(ENUM_POSITION_TYPE posType)
+{
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+      {
+         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
+         {
+            return PositionGetDouble(POSITION_PRICE_OPEN);
+         }
+      }
+   }
+   return 0.0;
 }
 
 //+------------------------------------------------------------------+
@@ -282,7 +397,7 @@ bool CloseAllPositionsGuaranteed()
          }
       }
    }
-  return false;
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -385,6 +500,7 @@ bool CheckEquityProtection()
                      floatingLossUSD, InpMaxDrawdownUSD);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
+         ResetCounters();
          return true;
       }
 
@@ -394,6 +510,7 @@ bool CheckEquityProtection()
          PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
+         ResetCounters();
          return true;
       }
    }
