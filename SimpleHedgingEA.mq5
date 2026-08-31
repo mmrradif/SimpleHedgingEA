@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Exact M1 S&R Zone Dual Grid EA                     |
+//| Description: Single Active Direction Grid EA (Zero Hanging Trades)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "106.00"
-#property description "Exact M1 Zone Dual Grid EA: Placed 11 BuyStops starting EXACTLY at M1 High & 11 SellStops starting EXACTLY at M1 Low (Target $5.00, Max Loss $500.00)"
+#property version   "108.00"
+#property description "Single Direction Grid EA: Deletes opposing pendings as soon as one side triggers to guarantee ZERO hanging trades in Real Ticks (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,7 +23,7 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
-input group "=== Exact M1 Zone Settings ==="
+input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
@@ -76,7 +76,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Exact M1 Zone Dual Grid EA v106.0 Initialized (Starts at M1 High/Low). Target: $%.2f, Max Loss: $%.2f", 
+   PrintFormat("[INIT] Single Direction Grid EA v108.0 Initialized (Zero Hanging Trades). Target: $%.2f, Max Loss: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -118,7 +118,24 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 4. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time, close ONLY if side profit > $0.00)
+   // ------------------------------------------------------------------
+   // 4. CORE FIX FOR HANGING TRADES (SINGLE DIRECTION ISOLATION):
+   //    As soon as BUY position opens, IMMEDIATELY delete all SellStops!
+   //    As soon as SELL position opens, IMMEDIATELY delete all BuyStops!
+   //    This guarantees Buy and Sell NEVER hedge each other!
+   // ------------------------------------------------------------------
+   if(buyCount > 0 && sellStopCount > 0)
+   {
+      DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
+      return;
+   }
+   if(sellCount > 0 && buyStopCount > 0)
+   {
+      DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
+      return;
+   }
+
+   // 5. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time, close ONLY if side profit > $0.00)
    if(InpEODProfitOnlyClose && IsEODCloseTime())
    {
       if(buyCount > 0 && buyProfitUSD > 0.0)
@@ -140,7 +157,7 @@ void OnTick()
       return;
    }
 
-   // 5. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
+   // 6. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
    if(InpUseTimeWindow && !IsWithinBDTradingHours())
    {
       // Outside BD trading hours: if no open positions exist, clean up pendings and pause!
@@ -156,7 +173,7 @@ void OnTick()
       }
    }
 
-   // 6. STATE: CLEANING UP PENDINGS AFTER PROFIT EXIT
+   // 7. STATE: CLEANING UP PENDINGS AFTER PROFIT EXIT
    if(m_gridState == GRID_STATE_CLEANING_ALL ||
       m_gridState == GRID_STATE_CLEANING_BUY ||
       m_gridState == GRID_STATE_CLEANING_SELL)
@@ -174,7 +191,7 @@ void OnTick()
       m_gridState = GRID_STATE_ACTIVE;
    }
 
-   // 7. PER-SIDE MAX LOSS CAP (Force close side if loss exceeds $500)
+   // 8. PER-SIDE MAX LOSS CAP (Force close side if loss exceeds $500)
    if(InpMaxSideLossUSD > 0)
    {
       if(buyCount > 0 && buyProfitUSD <= -InpMaxSideLossUSD)
@@ -199,7 +216,7 @@ void OnTick()
       }
    }
 
-   // 8. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
+   // 9. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [TOTAL BASKET PROFIT EXIT!] Net Profit $%.2f >= $%.2f. Closing all positions IN PROFIT...", totalProfitUSD, InpTargetProfitUSD);
@@ -209,7 +226,7 @@ void OnTick()
       return;
    }
 
-   // 9. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
+   // 10. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
    if(buyCount > 0 && buyProfitUSD >= InpBuySideTargetUSD)
    {
       PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side IN PROFIT...", buyProfitUSD, InpBuySideTargetUSD);
@@ -221,7 +238,7 @@ void OnTick()
       return;
    }
 
-   // 10. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
+   // 11. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
    if(sellCount > 0 && sellProfitUSD >= InpSellSideTargetUSD)
    {
       PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side IN PROFIT...", sellProfitUSD, InpSellSideTargetUSD);
@@ -233,13 +250,13 @@ void OnTick()
       return;
    }
 
-   // 11. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
+   // 12. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
    if(m_buySideClosed && m_sellSideClosed && totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       ResetStateMachine();
    }
 
-   // 12. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours & Normal Spread)
+   // 13. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours & Normal Spread)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
@@ -254,7 +271,7 @@ void OnTick()
       }
    }
 
-   // 13. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
+   // 14. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -373,9 +390,9 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Buy Base starts EXACTLY at M1 High (or Ask + StopLevel if Ask currently above M1 High)
+   // Buy Base starts EXACTLY at M1 High
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   // Sell Base starts EXACTLY at M1 Low (or Bid - StopLevel if Bid currently below M1 Low)
+   // Sell Base starts EXACTLY at M1 Low
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
    // Place 1 Buy Stop per tick starting EXACTLY at M1 High (0.01 to 0.11 Lot)
