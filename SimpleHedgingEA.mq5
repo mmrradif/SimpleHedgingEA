@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Dynamic Continuous Refill Dual Grid EA             |
+//| Description: Fixed Refill & Anti-Stacking Grid EA               |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "133.00"
-#property description "Dynamic Continuous Refill Dual Grid EA: Always maintains 11 active BuyStops above and 11 active SellStops below. Refills missing stops on EVERY tick ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "134.00"
+#property description "Fixed Refill EA: Caps total active grid to 11 levels and 0.55 max lot to prevent infinite 0.11 lot stacking during spikes ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -38,6 +38,7 @@ input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
 input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
+input double   InpMaxTotalVolumeCapLot = 0.66;    // Hard Total Volume Cap (0.66 Lot Max across all trades)
 
 input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
@@ -79,8 +80,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Dynamic Continuous Refill Dual Grid EA v133.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpProfitPerMicroLot, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Fixed Refill Anti-Stacking EA v134.0 Initialized. Volume Cap: %.2f Lot, Max DD: $%.2f", 
+               InpMaxTotalVolumeCapLot, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -134,10 +135,10 @@ void OnTick()
       return;
    }
 
-   // 5. ALWAYS MAINTAIN & REFILL ACTIVE PENDING STOPS (11 BuyStops & 11 SellStops)
-   if(!InpUseTimeWindow || IsWithinBDTradingHours())
+   // 5. SAFE CONTROLLED REFILL (Capped to prevent infinite 0.11 lot stacking)
+   if((!InpUseTimeWindow || IsWithinBDTradingHours()) && totalLot < InpMaxTotalVolumeCapLot)
    {
-      RefillMissingPendingStopsPaced(buyStopCount, sellStopCount);
+      RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
    }
 }
 
@@ -164,10 +165,9 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops continuously on Every Tick         |
-//| Maintains 11 BuyStops and 11 SellStops relative to current Ask/Bid|
+//| Refill Missing Pending Stops safely without volume stacking      |
 //+------------------------------------------------------------------+
-void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops)
+void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -184,33 +184,33 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops)
    double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
    double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Refill BuyStops if less than 11 active
-   if(activeBuyStops < InpMaxGridLevels)
+   // Refill BuyStops if less than 11 active and within volume cap
+   if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
-      int i = activeBuyStops + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      int levelIndex = activeBuyStops + 1;
+      double lot = NormalizeLot(InpStartLot + (levelIndex - 1) * InpLotStep);
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point;
       double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
       if(price > ask + stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyRefill #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyRefill #%d", levelIndex));
       }
       return; // 1 Order per tick!
    }
 
-   // Refill SellStops if less than 11 active
-   if(activeSellStops < InpMaxGridLevels)
+   // Refill SellStops if less than 11 active and within volume cap
+   if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
-      int i = activeSellStops + 1;
-      // Inverted lot for reversal safety stops if bullish, normal if bearish
-      double lot = (trendDir >= 0) ? NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep) : NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      int levelIndex = activeSellStops + 1;
+      // Normal 0.01 -> 0.11 lot progression to prevent infinite 0.11 lot stacking!
+      double lot = NormalizeLot(InpStartLot + (levelIndex - 1) * InpLotStep);
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point;
       double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
       if(price < bid - stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellRefill #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellRefill #%d", levelIndex));
       }
       return; // 1 Order per tick!
    }
