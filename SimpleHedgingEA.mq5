@@ -6,8 +6,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "111.00"
-#property description "Tiered DD & Guaranteed Profit EA: Tiered Drawdown ($100 for 1-2 trades, $200 for 4, $300 for 6, $400 for 8, $500 for 10+) & GUARANTEED Profit Exits for 3+ trades"
+#property version   "112.00"
+#property description "Tiered DD ($50 for 1-2 trades, $200 for 4, $300 for 6, $400 for 8, $500 for 10+) & Guaranteed Profit EA"
 
 #include <Trade\Trade.mqh>
 
@@ -35,7 +35,7 @@ input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Pro
 input double   InpMinProfit3TradesUSD = 2.00;     // Guaranteed Minimum Profit for 3+ Open Trades ($2.00)
 
 input group "=== Tiered Drawdown Cutoffs ==="
-input double   InpDDLimit1to2Trades   = 100.0;    // Max Loss for 1-2 Trades ($100.00)
+input double   InpDDLimit1to2Trades   = 50.0;     // Max Loss for 1-2 Trades ($50.00)
 input double   InpDDLimit3to4Trades   = 200.0;    // Max Loss for 3-4 Trades ($200.00)
 input double   InpDDLimit5to6Trades   = 300.0;    // Max Loss for 5-6 Trades ($300.00)
 input double   InpDDLimit7to8Trades   = 400.0;    // Max Loss for 7-8 Trades ($400.00)
