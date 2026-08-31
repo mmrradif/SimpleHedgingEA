@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Original Dual Zone Grid EA (11 BuyStops & 11 SellStops) |
+//| Description: Original Dual Zone Grid EA (Target $5, Loss $500)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "97.00"
-#property description "Original Dual Zone EA: 11 BuyStops in Buy Zone & 11 SellStops in Sell Zone (Independent Buy/Sell Side Exits, No SL)"
+#property version   "98.00"
+#property description "Original Dual Zone EA: 11 BuyStops in Buy Zone & 11 SellStops in Sell Zone (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -30,9 +30,10 @@ input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points 
 input double   InpSpacingMultiplier   = 1.15;     // Distance Multiplier
 
 input group "=== Profit & Loss Settings ==="
-input double   InpBuySideTargetUSD    = 1.00;     // Buy Side Profit Target ($1.00 Close Buys Only)
-input double   InpSellSideTargetUSD   = 1.00;     // Sell Side Profit Target ($1.00 Close Sells Only)
-input double   InpMaxSideLossUSD      = 50.0;     // Per-Side Max Loss Cap ($50 Force Close Side)
+input double   InpTargetProfitUSD     = 5.00;     // Target Net Profit ($5.00 Close All)
+input double   InpBuySideTargetUSD    = 5.00;     // Buy Side Profit Target ($5.00 Close Buys Only)
+input double   InpSellSideTargetUSD   = 5.00;     // Sell Side Profit Target ($5.00 Close Sells Only)
+input double   InpMaxSideLossUSD      = 500.0;    // Per-Side Max Loss Cap ($500.00 Force Close Side)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
@@ -42,7 +43,7 @@ input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 m
 input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close ONLY IF PROFITABLE (Never at a loss)
 
 input group "=== Risk Control & Drawdown Cap ==="
-input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
+input double   InpMaxAllowedDrawdownUSD = 500.0;  // Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
 input bool     InpClosePendingsFriday   = true;   // Weekend Gap Guard (Friday 23:40 Pending Delete)
 
@@ -74,8 +75,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Original Dual Zone EA v97.0 Initialized (11 BuyStops & 11 SellStops). BuyTgt: $%.2f, SellTgt: $%.2f, MaxDD: $%.2f", 
-               InpBuySideTargetUSD, InpSellSideTargetUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Original Dual Zone EA v98.0 Initialized (11 BuyStops & 11 SellStops). Target: $%.2f, Max Loss: $%.2f", 
+               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -112,7 +113,7 @@ void OnTick()
    int buyCount = 0, sellCount = 0, buyStopCount = 0, sellStopCount = 0;
    double totalBuyLot = 0, totalSellLot = 0;
    double buyProfitUSD = 0, sellProfitUSD = 0;
-   GetTradeStats(buyCount, sellCount, buyStopCount, sellStopCount, totalBuyLot, totalSellLot, buyProfitUSD, sellProfitUSD);
+   double totalProfitUSD = GetTradeStats(buyCount, sellCount, buyStopCount, sellStopCount, totalBuyLot, totalSellLot, buyProfitUSD, sellProfitUSD);
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
@@ -172,7 +173,7 @@ void OnTick()
       m_gridState = GRID_STATE_ACTIVE;
    }
 
-   // 7. PER-SIDE MAX LOSS CAP (Force close side if loss exceeds $50)
+   // 7. PER-SIDE MAX LOSS CAP (Force close side if loss exceeds $500)
    if(InpMaxSideLossUSD > 0)
    {
       if(buyCount > 0 && buyProfitUSD <= -InpMaxSideLossUSD)
@@ -197,7 +198,17 @@ void OnTick()
       }
    }
 
-   // 8. INDEPENDENT BUY-SIDE PROFIT EXIT ($1.00 TARGET)
+   // 8. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
+   if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
+   {
+      PrintFormat(">>> [TOTAL BASKET PROFIT EXIT!] Net Profit $%.2f >= $%.2f. Closing all positions IN PROFIT...", totalProfitUSD, InpTargetProfitUSD);
+      CloseAllPositionsGuaranteed();
+      DeleteAllPendingOrdersGuaranteed();
+      ResetStateMachine();
+      return;
+   }
+
+   // 9. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
    if(buyCount > 0 && buyProfitUSD >= InpBuySideTargetUSD)
    {
       PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side IN PROFIT...", buyProfitUSD, InpBuySideTargetUSD);
@@ -209,7 +220,7 @@ void OnTick()
       return;
    }
 
-   // 9. INDEPENDENT SELL-SIDE PROFIT EXIT ($1.00 TARGET)
+   // 10. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
    if(sellCount > 0 && sellProfitUSD >= InpSellSideTargetUSD)
    {
       PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side IN PROFIT...", sellProfitUSD, InpSellSideTargetUSD);
@@ -221,13 +232,13 @@ void OnTick()
       return;
    }
 
-   // 10. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
+   // 11. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
    if(m_buySideClosed && m_sellSideClosed && totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       ResetStateMachine();
    }
 
-   // 11. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
+   // 12. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -236,7 +247,7 @@ void OnTick()
       }
    }
 
-   // 12. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
+   // 13. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -589,6 +600,7 @@ void GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sellSt
 {
    buyCount = 0; sellCount = 0; buyStopCount = 0; sellStopCount = 0;
    totalBuyLot = 0; totalSellLot = 0; buyProfitUSD = 0.0; sellProfitUSD = 0.0;
+   double totalProfit = 0.0;
 
    // Scan Positions
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -597,6 +609,7 @@ void GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sellSt
       if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
       {
          double pft = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+         totalProfit += pft;
          ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          double vol = PositionGetDouble(POSITION_VOLUME);
 
@@ -626,6 +639,8 @@ void GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sellSt
          else if(type == ORDER_TYPE_SELL_STOP) sellStopCount++;
       }
    }
+
+   return totalProfit;
 }
 
 //+------------------------------------------------------------------+
@@ -641,7 +656,7 @@ bool CheckEquityProtection()
       double floatingLossUSD = balance - equity;
       double drawdownPercent = (floatingLossUSD / balance) * 100.0;
 
-      // 1. Hard Max USD Drawdown Cap ($5000.00)
+      // 1. Hard Max USD Drawdown Cap ($500.00)
       if(InpMaxAllowedDrawdownUSD > 0 && floatingLossUSD >= InpMaxAllowedDrawdownUSD)
       {
          PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Instant liquidation...", 
