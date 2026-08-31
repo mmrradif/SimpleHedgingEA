@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Grid EA with Basket Trailing Profit Lock-In         |
+//| Description: Dynamic Level-Based Fast Profit Grid EA             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "45.00"
-#property description "Pure Pending Grid EA (0.01-0.10 Lot) with Basket Trailing Profit Lock-In (EMA Filter Removed)"
+#property version   "46.00"
+#property description "Level-Based Fast Profit Grid EA (0.01: $0.50, 0.02: $1.00, 3-5: $2.00 - No Trailing Truncation)"
 
 #include <Trade\Trade.mqh>
 
@@ -18,10 +18,9 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
 input int      InpBaseGridStepPoints  = 250;      // Base Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Original 1.20)
-input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Close All)
 
-input group "=== Basket Trailing & Risk Control ==="
-input bool     InpEnableBasketTrailing= true;     // Lock-in Profit at Break-Even when P&L >= $1.00
+input group "=== Risk Control & Direction Lock ==="
+input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
 
@@ -31,7 +30,6 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
-double         m_peakBasketProfit;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -47,10 +45,7 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   m_peakBasketProfit = 0.0;
-
-   PrintFormat("[INIT] Pure Grid EA v45.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxDrawdownUSD);
+   PrintFormat("[INIT] Level-Based Grid EA v46.0 Initialized. Max DD Limit: $%.2f", InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -60,6 +55,17 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    PrintFormat("[DEINIT] EA Deinitialized. Reason code: %d", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Dynamic Profit Target Calculator Based on Open Trade Count      |
+//+------------------------------------------------------------------+
+double GetTargetProfitForCount(int tradeCount)
+{
+   if(tradeCount == 1) return 0.50; // 0.01 lot requires only 5 pips to close ($0.50) -> NEVER HANGS!
+   if(tradeCount == 2) return 1.00; // 0.01+0.02 lot requires only 3.3 pips ($1.00) -> NEVER HANGS!
+   if(tradeCount >= 3 && tradeCount <= 5) return 2.00; // 3-5 trades exit in $2.00 profit
+   return 1.00; // 6+ trades quick break-even rescue exit ($1.00)
 }
 
 //+------------------------------------------------------------------+
@@ -80,19 +86,6 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // Reset peak profit tracker when no positions exist
-   if(totalOpenPositions == 0)
-   {
-      m_peakBasketProfit = 0.0;
-   }
-   else
-   {
-      if(totalProfitUSD > m_peakBasketProfit)
-      {
-         m_peakBasketProfit = totalProfitUSD;
-      }
-   }
-
    // 3. STRICT SINGLE-DIRECTION LOCK (Prevents Real-Tick Double Traps)
    if(totalOpenPositions > 0)
    {
@@ -106,38 +99,24 @@ void OnTick()
       }
    }
 
-   // 4. BASKET TRAILING & ADAPTIVE TARGET EXIT
-   double currentTargetUSD = InpTargetProfitUSD;
-   if(totalOpenPositions >= 10)      currentTargetUSD = 0.50; // Instant exit on 10th order
-   else if(totalOpenPositions >= 5)  currentTargetUSD = 1.00; // Fast exit on 5+ orders
-
-   // Trailing Break-Even Protection: If profit peaked at >= $1.00 and falls back to $0.30, exit immediately!
-   if(InpEnableBasketTrailing && totalOpenPositions > 0 && m_peakBasketProfit >= 1.00)
+   // 4. LEVEL-BASED FAST PROFIT EXIT (0.01: $0.50, 0.02: $1.00, 3-5: $2.00)
+   if(totalOpenPositions > 0)
    {
-      if(totalProfitUSD <= 0.30)
+      double requiredTargetUSD = GetTargetProfitForCount(totalOpenPositions);
+      
+      if(totalProfitUSD >= requiredTargetUSD)
       {
-         PrintFormat(">>> [BASKET TRAILING EXIT] Profit dropped to $%.2f after peaking at $%.2f. Securing profit!", 
-                     totalProfitUSD, m_peakBasketProfit);
+         PrintFormat(">>> [PROFIT HIT!] Trades: %d, Profit: $%.2f >= $%.2f. Closing positions...", 
+                     totalOpenPositions, totalProfitUSD, requiredTargetUSD);
          CloseAllPositionsGuaranteed();
          DeleteAllPendingOrdersGuaranteed();
+         
          SetupProgressivePendingGrid();
          return;
       }
    }
 
-   // Normal Target Profit Exit
-   if(totalOpenPositions > 0 && totalProfitUSD >= currentTargetUSD)
-   {
-      PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
-                  totalProfitUSD, currentTargetUSD, totalOpenPositions);
-      CloseAllPositionsGuaranteed();
-      DeleteAllPendingOrdersGuaranteed();
-      
-      SetupProgressivePendingGrid();
-      return;
-   }
-
-   // 5. SETUP PURE 10-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -187,7 +166,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Pure Progressive Pending Grid (10 Orders: Buy & Sell)       |
+//| Setup Progressive Spacing Pending Grid (10 Orders: Buy & Sell)   |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
