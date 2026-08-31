@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Fixed 44-Order Quad-Zone Hedging Grid EA           |
+//| Description: Fixed 44-Order Quad-Zone Hedging Grid EA ($5 Target)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "62.00"
-#property description "Fixed 44-Order Quad-Zone Hedging Grid EA (11 Buy Stops + 11 Counter Sell Stops 50 pips below + 11 Sell Stops + 11 Counter Buy Stops 50 pips above)"
+#property version   "63.00"
+#property description "Fixed 44-Order Quad-Zone Hedging Grid EA ($5.00 Target Net Profit Exit)"
 
 #include <Trade\Trade.mqh>
 
@@ -19,12 +19,12 @@ input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exac
 input int      InpBaseGridStepPoints  = 200;      // Grid Distance Between Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input int      InpCounterOffsetPoints = 500;      // Counter Hedge Offset (500 Points = 50 Pips)
-input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
+input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Break-Even Shield & Protection ==="
 input bool     InpEnableBreakEven     = true;     // Enable Break-Even Profit Shield
-input double   InpBETriggerUSD        = 0.50;     // Profit Level to Trigger Break-Even ($0.50)
-input double   InpBELockUSD           = 0.10;     // Minimum Profit to Lock-In ($0.10)
+input double   InpBETriggerUSD        = 1.50;     // Profit Level to Trigger Break-Even ($1.50)
+input double   InpBELockUSD           = 0.50;     // Minimum Profit to Lock-In ($0.50)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
@@ -53,7 +53,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] Fixed 44-Order Grid EA v62.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 44-Order Grid EA v63.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -111,7 +111,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED TARGET PROFIT EXIT ($2.00 TARGET)
+   // 4. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
