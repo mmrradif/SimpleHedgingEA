@@ -6,8 +6,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "92.00"
-#property description "Pure Dual Grid EA: Buy zone closes ONLY when Buy side is profitable, Sell zone closes ONLY when Sell side is profitable (100% Zero Hanging Trades)"
+#property version   "93.00"
+#property description "Pure Dual Grid EA: Independent Buy/Sell Side Exits with Per-Side Max Loss Cap ($50) to prevent 0.66-lot loss accumulation"
 
 #include <Trade\Trade.mqh>
 
@@ -29,6 +29,7 @@ input double   InpLotStep             = 0.01;    // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;     // Base Grid Step (150 Points = 15 Pips)
 input double   InpBuySideTargetUSD    = 1.00;    // Buy Side Profit Target ($1.00 - Close Buys Only)
 input double   InpSellSideTargetUSD   = 1.00;    // Sell Side Profit Target ($1.00 - Close Sells Only)
+input double   InpMaxSideLossUSD      = 50.0;    // Per-Side Max Loss Cap ($50 - Force Close Side if Loss Exceeds)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;    // Enable Time Schedule Filter
@@ -161,7 +162,43 @@ void OnTick()
    }
 
    //------------------------------------------------------------------
-   // 7. CORE LOGIC: INDEPENDENT BUY-SIDE PROFIT EXIT
+   // 7. PER-SIDE MAX LOSS CAP (Force-close side if loss exceeds $50)
+   //    Prevents 0.66-lot accumulation from causing $500-$700 loss
+   //------------------------------------------------------------------
+   if(InpMaxSideLossUSD > 0)
+   {
+      if(buyCount > 0 && buyProfitUSD <= -InpMaxSideLossUSD)
+      {
+         PrintFormat(">>> [BUY SIDE MAX LOSS CUT] Buy Loss $%.2f >= Limit $%.2f (%d buys). Force closing Buy side to prevent further loss...",
+                     buyProfitUSD, -InpMaxSideLossUSD, buyCount);
+         ClosePositionsByType(POSITION_TYPE_BUY);
+         DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
+         m_buySideClosed  = true;
+         m_buyGridPlacedCount = 0;
+         if(sellCount == 0)
+            m_gridState = GRID_STATE_CLEANING_ALL;
+         else
+            m_gridState = GRID_STATE_CLEANING_BUY;
+         return;
+      }
+      if(sellCount > 0 && sellProfitUSD <= -InpMaxSideLossUSD)
+      {
+         PrintFormat(">>> [SELL SIDE MAX LOSS CUT] Sell Loss $%.2f >= Limit $%.2f (%d sells). Force closing Sell side to prevent further loss...",
+                     sellProfitUSD, -InpMaxSideLossUSD, sellCount);
+         ClosePositionsByType(POSITION_TYPE_SELL);
+         DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
+         m_sellSideClosed = true;
+         m_sellGridPlacedCount = 0;
+         if(buyCount == 0)
+            m_gridState = GRID_STATE_CLEANING_ALL;
+         else
+            m_gridState = GRID_STATE_CLEANING_SELL;
+         return;
+      }
+   }
+
+   //------------------------------------------------------------------
+   // 8. INDEPENDENT BUY-SIDE PROFIT EXIT
    //    Buy positions close ONLY when BUY SIDE PROFIT >= BuyTarget
    //------------------------------------------------------------------
    if(buyCount > 0 && buyProfitUSD >= InpBuySideTargetUSD)
@@ -169,7 +206,6 @@ void OnTick()
       PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= Target $%.2f (%d buys). Closing Buy side IN PROFIT...",
                   buyProfitUSD, InpBuySideTargetUSD, buyCount);
       ClosePositionsByType(POSITION_TYPE_BUY);
-      // Delete remaining buy stop pendings
       DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
       m_buySideClosed  = true;
       m_buyGridPlacedCount = 0;
@@ -181,7 +217,7 @@ void OnTick()
    }
 
    //------------------------------------------------------------------
-   // 8. CORE LOGIC: INDEPENDENT SELL-SIDE PROFIT EXIT
+   // 9. INDEPENDENT SELL-SIDE PROFIT EXIT
    //    Sell positions close ONLY when SELL SIDE PROFIT >= SellTarget
    //------------------------------------------------------------------
    if(sellCount > 0 && sellProfitUSD >= InpSellSideTargetUSD)
@@ -189,7 +225,6 @@ void OnTick()
       PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= Target $%.2f (%d sells). Closing Sell side IN PROFIT...",
                   sellProfitUSD, InpSellSideTargetUSD, sellCount);
       ClosePositionsByType(POSITION_TYPE_SELL);
-      // Delete remaining sell stop pendings
       DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
       m_sellSideClosed = true;
       m_sellGridPlacedCount = 0;
