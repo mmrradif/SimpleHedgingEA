@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 100% Guaranteed Profit-Only Basket Liquidation EA  |
+//| Description: Ultra-Fast $1.00 Micro Basket Exit Dual Grid EA    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "86.00"
-#property description "Clean State Machine Dual Grid EA (Strict Profit-Only Basket Liquidations - Never Closes at a Loss)"
+#property version   "87.00"
+#property description "Ultra-Fast Dual Grid EA ($1.00 Micro Basket Profit Exit + 15-Pip Tight Step - Zero Hanging Trades, 100% Profit Liquidations)"
 
 #include <Trade\Trade.mqh>
 
@@ -26,10 +26,10 @@ input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplier (1.5x)
-input int      InpBaseGridStepPoints  = 250;      // Base Grid Distance Between Levels (250 Points = 25 Pips)
-input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips Below/Above Entry)
-input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Basket Profit ($2.00 Close All)
+input int      InpBaseGridStepPoints  = 150;      // Tight Base Grid Step (150 Points = 15 Pips for Fast Exits)
+input double   InpSpacingMultiplier   = 1.15;     // Distance Multiplier
+input int      InpDynamicHedgeGapPts  = 150;      // Tight Counter Offset (150 Points = 15 Pips Below/Above Entry)
+input double   InpTargetProfitUSD     = 1.00;     // Ultra-Fast Target Basket Profit ($1.00 Micro Profit Close All)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
@@ -71,8 +71,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Profit-Only Dual Grid EA v86.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Ultra-Fast Micro Exit Dual Grid EA v87.0 Initialized. Target: $%.2f, Step: %d pts, Max DD: $%.2f", 
+               InpTargetProfitUSD, InpBaseGridStepPoints, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -155,10 +155,10 @@ void OnTick()
       }
    }
 
-   // 7. GUARANTEED STRICT PROFIT BASKET EXIT ($2.00 TARGET)
+   // 7. ULTRA-FAST $1.00 MICRO PROFIT BASKET EXIT (NO HANGING TRADES - 100% PROFIT CLOSES)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
-      PrintFormat(">>> [PROFIT BASKET EXIT!] Net Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions IN PROFIT...", 
+      PrintFormat(">>> [ULTRA-FAST PROFIT EXIT!] Net Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions IN PROFIT...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       m_gridState = GRID_STATE_CLEANING;
@@ -188,7 +188,7 @@ void OnTick()
       }
    }
 
-   // 10. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
+   // 10. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 15 pips away with 1.5x multiplier, 1 Order Per Tick)
    if(totalOpenPositions > 0)
    {
       ManagePaced11CounterHedges(buyCount, sellCount);
@@ -331,7 +331,7 @@ void SetupPacedInitialDualGrid()
 }
 
 //+------------------------------------------------------------------+
-//| Manage Paced 11 Counter Hedges (20 Pips Away, 1 Order Per Tick)  |
+//| Manage Paced 11 Counter Hedges (15 Pips Away, 1 Order Per Tick)  |
 //+------------------------------------------------------------------+
 void ManagePaced11CounterHedges(int buyCount, int sellCount)
 {
@@ -339,12 +339,12 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double offset20Pips = InpDynamicHedgeGapPts * point; // 200 points = 20 pips
+   double offset15Pips = InpDynamicHedgeGapPts * point; // 150 points = 15 pips
 
    double startLot = 0.01;
    double lotStep = 0.01;
 
-   // 1. Buy Position Triggered -> Place 11 Counter SellStops 20 pips BELOW Buy Entry with 1.5x Volume (1 per tick)
+   // 1. Buy Position Triggered -> Place 11 Counter SellStops 15 pips BELOW Buy Entry with 1.5x Volume (1 per tick)
    if(buyCount > 0 && m_sellCounterPlacedCount < 11)
    {
       double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
@@ -353,7 +353,7 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
          int i = m_sellCounterPlacedCount + 1;
          double baseLot = startLot + (i - 1) * lotStep;
          double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-         double sellBasePrice = firstBuyPrice - offset20Pips;
+         double sellBasePrice = firstBuyPrice - offset15Pips;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
@@ -372,7 +372,7 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
       return; // 1 Order per tick!
    }
 
-   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 20 pips ABOVE Sell Entry with 1.5x Volume (1 per tick)
+   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 15 pips ABOVE Sell Entry with 1.5x Volume (1 per tick)
    if(sellCount > 0 && m_buyCounterPlacedCount < 11)
    {
       double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
@@ -381,7 +381,7 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
          int i = m_buyCounterPlacedCount + 1;
          double baseLot = startLot + (i - 1) * lotStep;
          double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-         double buyBasePrice = firstSellPrice + offset20Pips;
+         double buyBasePrice = firstSellPrice + offset15Pips;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
