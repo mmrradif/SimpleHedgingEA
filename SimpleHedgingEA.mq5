@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Fibonacci Expanding Grid Spacing Dual Grid EA       |
+//| Description: Restored 20-Pip Spacing Master Grid EA             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "138.00"
-#property description "Fibonacci Expanding Grid EA: Uses Fibonacci sequence (1, 1, 2, 3, 5, 8, 13...) for grid level spacing to expand gaps during spikes, keeping drawdown ultra-low ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "139.00"
+#property description "Restored 20-Pip Spacing Master EA: Exact 20 pips gap between all orders, inverted lot sequence (0.11 -> 0.01) for refills, BD 08:00 AM - 08:00 PM schedule ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -31,13 +31,13 @@ input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direc
 input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
 input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
 
-input group "=== Fibonacci Expanding Grid & Lot Settings ==="
+input group "=== 20-Pip Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input int      InpBaseFiboStepPoints  = 300;      // Base Fibo Step (300 Points = 30 Pips Base Gap)
-input int      InpReversalOffsetPoints = 300;     // Reversal Pending Offset (300 Points = 30 Pips Offset)
+input int      InpBaseGridStepPoints  = 200;      // Base Grid Step (200 Points = EXACT 20 Pips Gap Between Orders)
+input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
 input double   InpMaxTotalVolumeCapLot = 3.96;    // Hard Total Volume Cap (3.96 Lots = 6 Full Cycles Cap)
 
 input group "=== Total Max Drawdown Protection ==="
@@ -61,9 +61,6 @@ ENUM_GRID_STATE  m_gridState;
 int              m_fastEmaHandle;
 int              m_slowEmaHandle;
 
-//--- Fibonacci Multiplier Table (1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89)
-const double g_fiboSeq[] = {1.0, 1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 34.0, 55.0, 89.0};
-
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -84,8 +81,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Fibonacci Expanding Grid EA v138.0 Initialized. Base Step: %d Points, Max DD: $%.2f", 
-               InpBaseFiboStepPoints, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Restored 20-Pip Spacing Master EA v139.0 Initialized. Step: %d Points (20 Pips), Max DD: $%.2f", 
+               InpBaseGridStepPoints, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -157,7 +154,7 @@ void OnTick()
       }
    }
 
-   // 6. CONTINUOUS FIBONACCI REFILL CONTROLLED WITHIN BD TRADING HOURS (08:00 AM - 08:00 PM BD TIME)
+   // 6. CONTINUOUS INVERTED REFILL CONTROLLED WITHIN BD TRADING HOURS (08:00 AM - 08:00 PM BD TIME)
    if((!InpUseTimeWindow || IsWithinBDTradingHours()) && totalLot < InpMaxTotalVolumeCapLot)
    {
       RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
@@ -167,21 +164,6 @@ void OnTick()
       // Delete all pendings outside BD trading hours so no pending hangs overnight
       DeleteAllPendingOrdersGuaranteed();
    }
-}
-
-//+------------------------------------------------------------------+
-//| Get Cumulative Fibonacci Offset Points for Level N (1-Indexed)   |
-//+------------------------------------------------------------------+
-double GetFiboCumulativeOffsetPoints(int levelIndex)
-{
-   if(levelIndex <= 1) return 0;
-   double cumulativeFiboUnits = 0.0;
-   for(int k = 0; k < levelIndex - 1; k++)
-   {
-      int seqIdx = (k < 11) ? k : 10;
-      cumulativeFiboUnits += g_fiboSeq[seqIdx];
-   }
-   return cumulativeFiboUnits * InpBaseFiboStepPoints;
 }
 
 //+------------------------------------------------------------------+
@@ -238,7 +220,7 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops with FIBONACCI Expanding Spacing   |
+//| Refill Missing Pending Stops with 20-Pip Spacing & Inverted Lots |
 //+------------------------------------------------------------------+
 void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
 {
@@ -257,32 +239,34 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
    double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
    double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Refill BuyStops with FIBONACCI Expanding Spacing (Inverted lot order 0.11 -> 0.01)
+   // Refill BuyStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
    if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeBuyStops + 1;
+      // Inverted Lot Sequence: 0.11 -> 0.01
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativeOffsetPoints = GetFiboCumulativeOffsetPoints(levelIndex); // Fibonacci Expanding Gap!
-      double price = NormalizeDouble(buyBasePrice + cumulativeOffsetPoints * point, _Digits);
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
       if(price > ask + stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyFiboRefill #%d", levelIndex));
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyRefill #%d", levelIndex));
       }
       return; // 1 Order per tick!
    }
 
-   // Refill SellStops with FIBONACCI Expanding Spacing (Inverted lot order 0.11 -> 0.01)
+   // Refill SellStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
    if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeSellStops + 1;
+      // Inverted Lot Sequence: 0.11 -> 0.01
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativeOffsetPoints = GetFiboCumulativeOffsetPoints(levelIndex); // Fibonacci Expanding Gap!
-      double price = NormalizeDouble(sellBasePrice - cumulativeOffsetPoints * point, _Digits);
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
       if(price < bid - stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellFiboRefill #%d", levelIndex));
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellRefill #%d", levelIndex));
       }
       return; // 1 Order per tick!
    }
