@@ -6,8 +6,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "115.00"
-#property description "Strict Spread Guard EA: Blocks grid placement if Ask-Bid spread exceeds maximum limit (Default 50 points = 5 pips)"
+#property version   "116.00"
+#property description "Strict Spread Protection EA (200 Points / 20 Pips Max Limit for Gold & FX) with Tiered DD ($50-$500)"
 
 #include <Trade\Trade.mqh>
 
@@ -43,7 +43,7 @@ input double   InpDDLimit9PlusTrades  = 500.0;    // Max Loss for 9+ Trades ($50
 
 input group "=== Strict Ask-Bid Spread Protection ==="
 input bool     InpUseSpreadGuard      = true;     // Enable Strict Spread Filter
-input int      InpMaxSpreadPoints     = 50;       // Max Allowed Ask-Bid Spread (50 Points = 5 Pips Max Limit)
+input int      InpMaxSpreadPoints     = 200;      // Max Allowed Ask-Bid Spread (200 Points = 20 Pips Max Limit for Gold/FX)
 
 input group "=== Trading Schedule & Filters ==="
 input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for 24/7 execution)
