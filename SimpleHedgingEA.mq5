@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Standard Compliant Dual Grid EA (Target $5, Loss $500)|
+//| Description: Exact M1 S&R Zone Dual Grid EA                     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "105.00"
-#property description "MT5 Compliant Dual Grid EA: 11 BuyStops above Ask & 11 SellStops below Bid (Target $5.00, Max Loss $500.00)"
+#property version   "106.00"
+#property description "Exact M1 Zone Dual Grid EA: Placed 11 BuyStops starting EXACTLY at M1 High & 11 SellStops starting EXACTLY at M1 Low (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,7 +23,7 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
-input group "=== Grid & Lot Settings ==="
+input group "=== Exact M1 Zone Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
@@ -75,7 +75,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Standard Compliant Grid EA v105.0 Initialized. Target: $%.2f, Max Loss: $%.2f", 
+   PrintFormat("[INIT] Exact M1 Zone Dual Grid EA v106.0 Initialized (Starts at M1 High/Low). Target: $%.2f, Max Loss: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -350,9 +350,9 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Standard MT5 Compliant Dual Grid                           |
-//| BuyStops placed validly ABOVE Ask                                |
-//| SellStops placed validly BELOW Bid                               |
+//| Setup Exact M1 Zone Dual Grid                                    |
+//| BuyStops start EXACTLY AT m1High (M1 Resistance)                |
+//| SellStops start EXACTLY AT m1Low (M1 Support)                   |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -366,12 +366,12 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Valid MT5 Buy Base: Above Ask
+   // Buy Base starts EXACTLY at M1 High (or Ask + StopLevel if Ask currently above M1 High)
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   // Valid MT5 Sell Base: Below Bid
+   // Sell Base starts EXACTLY at M1 Low (or Bid - StopLevel if Bid currently below M1 Low)
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Place 1 Buy Stop per tick above Ask (0.01 to 0.11 Lot)
+   // Place 1 Buy Stop per tick starting EXACTLY at M1 High (0.01 to 0.11 Lot)
    if(m_buyGridPlacedCount < 11)
    {
       int i = m_buyGridPlacedCount + 1;
@@ -393,7 +393,7 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place 1 Sell Stop per tick below Bid (0.01 to 0.11 Lot)
+   // Place 1 Sell Stop per tick starting EXACTLY at M1 Low (0.01 to 0.11 Lot)
    if(m_sellGridPlacedCount < 11)
    {
       int i = m_sellGridPlacedCount + 1;
