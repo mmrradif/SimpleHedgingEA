@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Clean State Machine Dual Grid EA (Zero Loop Trap)   |
+//| Description: Clean State Machine Dual Grid EA (Default $5000 DD) |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "79.00"
-#property description "Clean State Machine Dual Grid EA (Zero Cancel/Replace Loops - 100% Clean Grid Execution)"
+#property version   "80.00"
+#property description "Clean State Machine Dual Grid EA (Hardcoded Default $5000.00 Max USD Drawdown Limit)"
 
 #include <Trade\Trade.mqh>
 
@@ -32,8 +32,8 @@ input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Dis
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Risk Control & Drawdown Cap ==="
-input double   InpMaxDrawdownUSD      = 5000.0;   // Strict Maximum Allowed Drawdown ($5000.00 Max USD Loss)
-input double   InpMaxDrawdownPercent  = 80.0;     // Emergency Equity Protection (%)
+input double   InpMaxDrawdownUSD      = 5000.0;   // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
+input double   InpMaxDrawdownPercent  = 90.0;     // Emergency Equity Protection (%)
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -63,7 +63,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Clean State Machine Dual Grid EA v79.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Clean State Machine Dual Grid EA v80.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
