@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Dual Grid EA with Weekend Gap Protection           |
+//| Description: Daily Time Window (07:00 to 22:00) Dual Grid EA    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "82.00"
-#property description "Clean State Machine Dual Grid EA with Weekend Gap Protection (Deletes Pendings Before Friday Market Close)"
+#property version   "83.00"
+#property description "Clean State Machine Dual Grid EA with Daily Time Window (07:00 to 22:00) & Weekend Gap Protection"
 
 #include <Trade\Trade.mqh>
 
@@ -30,6 +30,11 @@ input int      InpBaseGridStepPoints  = 250;      // Base Grid Distance Between 
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips Below/Above Entry)
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
+
+input group "=== Time Window & Daily Schedule ==="
+input bool     InpUseTimeWindow       = true;     // Enable Daily Time Window Filter
+input int      InpStartHour           = 7;        // Daily Start Trading Hour (07:00 AM)
+input int      InpEndHour             = 22;       // Daily End Trading Hour (22:00 / 10:00 PM)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
@@ -64,8 +69,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Weekend Gap Guard Dual Grid EA v82.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Time Window Grid EA v83.0 Initialized. Hours: %02d:00-%02d:00, Target: $%.2f, Max DD: $%.2f", 
+               InpStartHour, InpEndHour, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -88,7 +93,7 @@ void OnTick()
       return;
    }
 
-   // 2. Friday Weekend Gap Protection (Deletes Pendings at Friday 23:45)
+   // 2. Friday Weekend Gap Protection (Deletes Pendings at Friday 23:40)
    if(InpClosePendingsFriday && IsFridayNightClose())
    {
       if(OrdersTotal() > 0)
@@ -105,7 +110,24 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 4. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
+   // 4. DAILY TIME WINDOW FILTER (07:00 AM to 22:00 / 10:00 PM)
+   if(InpUseTimeWindow && !IsWithinTradingHours())
+   {
+      // Outside trading hours: if no open positions exist, clean up pendings and pause!
+      if(totalOpenPositions == 0 && totalPendingOrders > 0)
+      {
+         DeleteOnePendingOrderPaced();
+         return;
+      }
+      if(totalOpenPositions == 0)
+      {
+         ResetStateMachine();
+         return;
+      }
+      // If open positions exist outside trading hours, let them manage until proft exit or drawdown cap
+   }
+
+   // 5. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
    if(m_gridState == GRID_STATE_CLEANING)
    {
       if(totalPendingOrders > 0)
@@ -119,7 +141,7 @@ void OnTick()
       }
    }
 
-   // 5. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 6. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
@@ -129,13 +151,16 @@ void OnTick()
       return;
    }
 
-   // 6. STATE 2: EMPTY STATE -> START PLACEMENT
+   // 7. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed trading hours)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
-      m_gridState = GRID_STATE_PLACING_INITIAL;
+      if(!InpUseTimeWindow || IsWithinTradingHours())
+      {
+         m_gridState = GRID_STATE_PLACING_INITIAL;
+      }
    }
 
-   // 7. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
+   // 8. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -149,10 +174,28 @@ void OnTick()
       }
    }
 
-   // 8. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
+   // 9. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
    if(totalOpenPositions > 0)
    {
       ManagePaced11CounterHedges(buyCount, sellCount);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if current server time is within allowed trading hours     |
+//+------------------------------------------------------------------+
+bool IsWithinTradingHours()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+
+   if(InpStartHour <= InpEndHour)
+   {
+      return (dt.hour >= InpStartHour && dt.hour < InpEndHour);
+   }
+   else
+   {
+      return (dt.hour >= InpStartHour || dt.hour < InpEndHour);
    }
 }
 
