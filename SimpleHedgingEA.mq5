@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Direct Ask/Bid Price Dual Grid EA (No High/Low Scan)|
+//| Description: Precision S&R Zone Breakout Dual Grid EA           |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "99.00"
-#property description "Direct Price Dual Grid EA: 11 BuyStops directly above Ask & 11 SellStops directly below Bid (No High/Low Scan, Target $5.00, Max Loss $500.00)"
+#property version   "100.00"
+#property description "Precision Zone Dual Grid EA: 11 BuyStops placed OUTSIDE 30-Min High & 11 SellStops placed OUTSIDE 30-Min Low (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,11 +23,12 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
-input group "=== Grid & Lot Settings ==="
+input group "=== Zone & Grid Settings ==="
+input int      InpZoneLookback        = 30;       // Support/Resistance Zone Lookback (30 M1 Bars)
+input int      InpZoneBufferPoints    = 50;       // Zone Breakout Buffer (50 Points = 5 Pips Beyond High/Low)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
-input double   InpSpacingMultiplier   = 1.15;     // Distance Multiplier
 
 input group "=== Profit & Loss Settings ==="
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Profit ($5.00 Close All)
@@ -75,8 +76,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Direct Price Dual Grid EA v99.0 Initialized (No High/Low Scan). Target: $%.2f, Max Loss: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Precision Zone Dual Grid EA v100.0 Initialized. Zone Lookback: %d bars, Target: $%.2f, Max Loss: $%.2f", 
+               InpZoneLookback, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -350,10 +351,13 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Direct Price Dual Grid (No High/Low Scan)                  |
+//| Setup Precision Support & Resistance Zone Grid                   |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
+   double m1High = 0, m1Low = 0;
+   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low);
+
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -361,11 +365,12 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Direct price offset starting level
-   double buyBasePrice = ask + (stopLevel + 15) * point;
-   double sellBasePrice = bid - (stopLevel + 15) * point;
+   // Place BuyStops OUTSIDE the 30-min High + Buffer
+   double buyBasePrice = MathMax(m1High + InpZoneBufferPoints * point, ask + (stopLevel + 15) * point);
+   // Place SellStops OUTSIDE the 30-min Low - Buffer
+   double sellBasePrice = MathMin(m1Low - InpZoneBufferPoints * point, bid - (stopLevel + 15) * point);
 
-   // Place 1 Buy Stop per tick directly above Ask (0.01 to 0.11 Lot)
+   // Place 1 Buy Stop per tick in Buy Zone (0.01 to 0.11 Lot)
    if(m_buyGridPlacedCount < 11)
    {
       int i = m_buyGridPlacedCount + 1;
@@ -387,7 +392,7 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place 1 Sell Stop per tick directly below Bid (0.01 to 0.11 Lot)
+   // Place 1 Sell Stop per tick in Sell Zone (0.01 to 0.11 Lot)
    if(m_sellGridPlacedCount < 11)
    {
       int i = m_sellGridPlacedCount + 1;
@@ -450,6 +455,44 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
       }
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Find M1 Support and Resistance Zone                              |
+//+------------------------------------------------------------------+
+void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
+{
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+
+   m1High = ask + (40 * point);
+   m1Low = bid - (40 * point);
+
+   if(lookback <= 0) return;
+
+   double highArray[];
+   double lowArray[];
+   ArraySetAsSeries(highArray, true);
+   ArraySetAsSeries(lowArray, true);
+
+   int copiedHigh = CopyHigh(_Symbol, PERIOD_M1, 1, lookback, highArray);
+   int copiedLow = CopyLow(_Symbol, PERIOD_M1, 1, lookback, lowArray);
+
+   if(copiedHigh > 0 && copiedLow > 0)
+   {
+      m1High = highArray[0];
+      m1Low = lowArray[0];
+
+      for(int i = 1; i < copiedHigh; i++)
+      {
+         if(highArray[i] > m1High) m1High = highArray[i];
+      }
+      for(int i = 1; i < copiedLow; i++)
+      {
+         if(lowArray[i] < m1Low) m1Low = lowArray[i];
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
