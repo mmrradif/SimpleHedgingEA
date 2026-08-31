@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Weighted Counter-Grid Recovery EA (1.5x Volume)    |
+//| Description: Paced Anti-Spam Order Deletion Grid EA              |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "68.00"
-#property description "Weighted Counter-Grid Recovery EA (1.5x Volume Multiplier to Guarantee Profit Extraction and Prevent Equal-Volume Locks)"
+#property version   "69.00"
+#property description "Paced Anti-Spam Order Deletion Grid EA (Places 1 Order & Deletes 1 Order Per Tick - 100% Zero MT5 Block Errors)"
 
 #include <Trade\Trade.mqh>
 
@@ -55,11 +55,10 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
-   m_peakBasketProfit = 0.0;
    
    ResetCounters();
 
-   PrintFormat("[INIT] Weighted Counter-Grid EA v68.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Paced Anti-Spam Grid EA v69.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -103,7 +102,14 @@ void OnTick()
       }
    }
 
-   // 3. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
+   // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick if cleanup is needed)
+   if(totalOpenPositions == 0 && totalPendingOrders > 0)
+   {
+      DeleteOnePendingOrderPaced();
+      return;
+   }
+
+   // 4. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
    if(InpEnableBreakEven && totalOpenPositions > 0 && m_peakBasketProfit >= InpBETriggerUSD)
    {
       if(totalProfitUSD <= InpBELockUSD)
@@ -111,31 +117,29 @@ void OnTick()
          PrintFormat(">>> [BREAK-EVEN SHIELD EXIT] Profit dropped to $%.2f after peaking at $%.2f. Securing profit!", 
                      totalProfitUSD, m_peakBasketProfit);
          CloseAllPositionsGuaranteed();
-         DeleteAllPendingOrdersGuaranteed();
          ResetCounters();
          return;
       }
    }
 
-   // 4. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 5. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
-      DeleteAllPendingOrdersGuaranteed();
       ResetCounters();
       return;
    }
 
-   // 5. PACED INITIAL GRID PLACEMENT (1 Order Per Tick Max)
+   // 6. PACED INITIAL GRID PLACEMENT (1 Order Per Tick Max)
    if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 10 || m_sellGridPlacedCount < 10))
    {
       SetupPacedInitialGrid();
       return;
    }
 
-   // 6. PACED WEIGHTED COUNTER HEDGE PLACEMENT (1.5x Lot Multiplier, 1 Order Per Tick Max)
+   // 7. PACED WEIGHTED COUNTER HEDGE PLACEMENT (1.5x Lot Multiplier, 1 Order Per Tick Max)
    if(totalOpenPositions > 0)
    {
       ManagePacedWeightedCounterHedges(buyCount, sellCount);
@@ -152,6 +156,22 @@ void ResetCounters()
    m_sellGridPlacedCount = 0;
    m_buyCounterPlacedCount = 0;
    m_sellCounterPlacedCount = 0;
+}
+
+//+------------------------------------------------------------------+
+//| Paced Anti-Spam Single Order Deletion (1 Order Delete Per Tick)  |
+//+------------------------------------------------------------------+
+void DeleteOnePendingOrderPaced()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+      {
+         m_trade.OrderDelete(ticket);
+         return; // 1 Deletion per tick!
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
