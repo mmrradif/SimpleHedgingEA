@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Daily Time Window (07:00 to 22:00) Dual Grid EA    |
+//| Description: Bangladesh Time (07:00 AM - 10:00 PM BD) Dual Grid |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "83.00"
-#property description "Clean State Machine Dual Grid EA with Daily Time Window (07:00 to 22:00) & Weekend Gap Protection"
+#property version   "84.00"
+#property description "Clean State Machine Dual Grid EA with Bangladesh Time Schedule (07:00 AM to 10:00 PM BD Time Converter)"
 
 #include <Trade\Trade.mqh>
 
@@ -31,10 +31,11 @@ input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips Below/Above Entry)
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
-input group "=== Time Window & Daily Schedule ==="
-input bool     InpUseTimeWindow       = true;     // Enable Daily Time Window Filter
-input int      InpStartHour           = 7;        // Daily Start Trading Hour (07:00 AM)
-input int      InpEndHour             = 22;       // Daily End Trading Hour (22:00 / 10:00 PM)
+input group "=== Bangladesh Time Schedule (GMT+6) ==="
+input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
+input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
+input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
+input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD Time GMT+6 minus Broker Server Time GMT+3 = 3 Hours)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
@@ -69,8 +70,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Time Window Grid EA v83.0 Initialized. Hours: %02d:00-%02d:00, Target: $%.2f, Max DD: $%.2f", 
-               InpStartHour, InpEndHour, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] BD Time Dual Grid EA v84.0 Initialized. Schedule: %02d:00 AM to %02d:00 PM BD Time. Target: $%.2f, Max DD: $%.2f", 
+               InpBDStartHour, InpBDEndHour - 12, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -110,10 +111,10 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 4. DAILY TIME WINDOW FILTER (07:00 AM to 22:00 / 10:00 PM)
-   if(InpUseTimeWindow && !IsWithinTradingHours())
+   // 4. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
+   if(InpUseTimeWindow && !IsWithinBDTradingHours())
    {
-      // Outside trading hours: if no open positions exist, clean up pendings and pause!
+      // Outside BD trading hours: if no open positions exist, clean up pendings and pause!
       if(totalOpenPositions == 0 && totalPendingOrders > 0)
       {
          DeleteOnePendingOrderPaced();
@@ -124,7 +125,7 @@ void OnTick()
          ResetStateMachine();
          return;
       }
-      // If open positions exist outside trading hours, let them manage until proft exit or drawdown cap
+      // If open positions exist outside BD trading hours, let them manage until profit exit or drawdown cap
    }
 
    // 5. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
@@ -151,10 +152,10 @@ void OnTick()
       return;
    }
 
-   // 7. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed trading hours)
+   // 7. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
-      if(!InpUseTimeWindow || IsWithinTradingHours())
+      if(!InpUseTimeWindow || IsWithinBDTradingHours())
       {
          m_gridState = GRID_STATE_PLACING_INITIAL;
       }
@@ -182,20 +183,23 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Check if current server time is within allowed trading hours     |
+//| Convert Broker Time to BD Time & Check Hours                     |
 //+------------------------------------------------------------------+
-bool IsWithinTradingHours()
+bool IsWithinBDTradingHours()
 {
    MqlDateTime dt;
    TimeCurrent(dt);
 
-   if(InpStartHour <= InpEndHour)
+   // Calculate Bangladesh Hour from Broker Server Time
+   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
+
+   if(InpBDStartHour <= InpBDEndHour)
    {
-      return (dt.hour >= InpStartHour && dt.hour < InpEndHour);
+      return (bdHour >= InpBDStartHour && bdHour < InpBDEndHour);
    }
    else
    {
-      return (dt.hour >= InpStartHour || dt.hour < InpEndHour);
+      return (bdHour >= InpBDStartHour || bdHour < InpBDEndHour);
    }
 }
 
