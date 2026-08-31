@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Directional & Break-Even Lock Dual Grid EA         |
+//| Description: Pure Dual Grid EA (11 BuyStops & 11 SellStops Only) |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "89.00"
-#property description "Directional Dual Grid EA with Break-Even Profit Lock (Closes Buy/Sell Separately at Profit to Eliminate Hanging Trades)"
+#property version   "90.00"
+#property description "Pure Dual Grid EA (Strictly 11 BuyStops in Buy Zone & 11 SellStops in Sell Zone Only - Zero Counter Pendings)"
 
 #include <Trade\Trade.mqh>
 
@@ -17,7 +17,6 @@ enum ENUM_GRID_STATE
    GRID_STATE_EMPTY,
    GRID_STATE_PLACING_INITIAL,
    GRID_STATE_ACTIVE,
-   GRID_STATE_PLACING_COUNTER,
    GRID_STATE_CLEANING
 };
 
@@ -25,11 +24,9 @@ enum ENUM_GRID_STATE
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplier (1.5x)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
-input int      InpCounterStepPoints   = 100;      // Fixed Counter Step Spacing (100 Points = 10 Pips)
-input double   InpTargetProfitUSD     = 1.50;     // Fast Target Basket Profit ($1.50 Close All)
-input double   InpDirectionalTargetUSD= 1.00;     // Directional Profit Exit ($1.00 Close Buy/Sell Basket Separately)
+input double   InpSpacingMultiplier   = 1.15;     // Distance Multiplier
+input double   InpTargetProfitUSD     = 1.50;     // Fast Target Net Profit ($1.50 Close All)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
@@ -52,8 +49,6 @@ CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
 int              m_buyGridPlacedCount;
 int              m_sellGridPlacedCount;
-int              m_buyCounterPlacedCount;
-int              m_sellCounterPlacedCount;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -71,7 +66,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Directional Profit Lock EA v89.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Pure Dual Grid EA v90.0 Initialized (11 BuyStops & 11 SellStops Only). Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -108,8 +103,7 @@ void OnTick()
    // 3. Scan Account Trade Stats
    int buyCount = 0, sellCount = 0, buyStopCount = 0, sellStopCount = 0;
    double totalBuyLot = 0, totalSellLot = 0;
-   double buyProfitUSD = 0, sellProfitUSD = 0;
-   double totalProfitUSD = GetTradeStats(buyCount, sellCount, buyStopCount, sellStopCount, totalBuyLot, totalSellLot, buyProfitUSD, sellProfitUSD);
+   double totalProfitUSD = GetTradeStats(buyCount, sellCount, buyStopCount, sellStopCount, totalBuyLot, totalSellLot);
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
@@ -166,19 +160,7 @@ void OnTick()
       return;
    }
 
-   // 8. DIRECTIONAL PROFIT EXITS (Closes Buy or Sell side independently if profit >= $1.00 USD)
-   if(buyCount > 0 && buyProfitUSD >= InpDirectionalTargetUSD)
-   {
-      PrintFormat(">>> [BUY BASKET PROFIT EXIT!] Buy Profit: $%.2f >= $%.2f. Closing all Buy positions...", buyProfitUSD, InpDirectionalTargetUSD);
-      ClosePositionsByType(POSITION_TYPE_BUY);
-   }
-   if(sellCount > 0 && sellProfitUSD >= InpDirectionalTargetUSD)
-   {
-      PrintFormat(">>> [SELL BASKET PROFIT EXIT!] Sell Profit: $%.2f >= $%.2f. Closing all Sell positions...", sellProfitUSD, InpDirectionalTargetUSD);
-      ClosePositionsByType(POSITION_TYPE_SELL);
-   }
-
-   // 9. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
+   // 8. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -187,7 +169,7 @@ void OnTick()
       }
    }
 
-   // 10. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
+   // 9. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -199,12 +181,6 @@ void OnTick()
       {
          m_gridState = GRID_STATE_ACTIVE;
       }
-   }
-
-   // 11. STATE 4: PLACING 11 COUNTER HEDGES (Fixed 10-Pip Step Spacing, 1 Order Per Tick)
-   if(totalOpenPositions > 0)
-   {
-      ManagePaced11CounterHedges(buyCount, sellCount);
    }
 }
 
@@ -257,8 +233,6 @@ void ResetStateMachine()
    m_gridState = GRID_STATE_EMPTY;
    m_buyGridPlacedCount = 0;
    m_sellGridPlacedCount = 0;
-   m_buyCounterPlacedCount = 0;
-   m_sellCounterPlacedCount = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -341,154 +315,6 @@ void SetupPacedInitialDualGrid()
       }
       return; // 1 Order per tick!
    }
-}
-
-//+------------------------------------------------------------------+
-//| Manage Paced 11 Counter Hedges (Fixed 10-Pip Step Spacing)       |
-//+------------------------------------------------------------------+
-void ManagePaced11CounterHedges(int buyCount, int sellCount)
-{
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-
-   double startLot = 0.01;
-   double lotStep = 0.01;
-
-   // 1. Buy Position Triggered -> Place 11 Counter SellStops below Buy Entry with fixed 10-pip steps
-   if(buyCount > 0 && m_sellCounterPlacedCount < 11)
-   {
-      double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
-      if(firstBuyPrice > 0)
-      {
-         int i = m_sellCounterPlacedCount + 1;
-         double baseLot = startLot + (i - 1) * lotStep;
-         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-         double cumulativeOffset = i * InpCounterStepPoints * point; // Fixed 10-pip steps
-         double price = NormalizeDouble(firstBuyPrice - cumulativeOffset, _Digits);
-
-         if(price < bid - stopLevel * point && price > 0)
-         {
-            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, weightedLot, price, StringFormat("CounterSell #%d", i)))
-            {
-               m_sellCounterPlacedCount++;
-            }
-         }
-         else
-         {
-            m_sellCounterPlacedCount++;
-         }
-      }
-      return; // 1 Order per tick!
-   }
-
-   // 2. Sell Position Triggered -> Place 11 Counter BuyStops above Sell Entry with fixed 10-pip steps
-   if(sellCount > 0 && m_buyCounterPlacedCount < 11)
-   {
-      double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
-      if(firstSellPrice > 0)
-      {
-         int i = m_buyCounterPlacedCount + 1;
-         double baseLot = startLot + (i - 1) * lotStep;
-         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-         double cumulativeOffset = i * InpCounterStepPoints * point; // Fixed 10-pip steps
-         double price = NormalizeDouble(firstSellPrice + cumulativeOffset, _Digits);
-
-         if(price > ask + stopLevel * point)
-         {
-            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, weightedLot, price, StringFormat("CounterBuy #%d", i)))
-            {
-               m_buyCounterPlacedCount++;
-            }
-         }
-         else
-         {
-            m_buyCounterPlacedCount++;
-         }
-      }
-      return; // 1 Order per tick!
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Close Positions by Specific Type (BUY or SELL)                   |
-//+------------------------------------------------------------------+
-bool ClosePositionsByType(ENUM_POSITION_TYPE posType)
-{
-   ENUM_ORDER_TYPE_FILLING fillings[] = {ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN};
-
-   for(int retry = 0; retry < 5; retry++)
-   {
-      ulong tickets[];
-      int count = 0;
-
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-         {
-            if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
-            {
-               ArrayResize(tickets, count + 1);
-               tickets[count] = ticket;
-               count++;
-            }
-         }
-      }
-
-      if(count == 0) return true;
-
-      for(int k = 0; k < count; k++)
-      {
-         if(!m_trade.PositionClose(tickets[k]))
-         {
-            PositionSelectByTicket(tickets[k]);
-            double volume = PositionGetDouble(POSITION_VOLUME);
-
-            for(int f = 0; f < 3; f++)
-            {
-               MqlTradeRequest req = {};
-               MqlTradeResult  res = {};
-
-               req.action       = TRADE_ACTION_DEAL;
-               req.position     = tickets[k];
-               req.symbol       = _Symbol;
-               req.volume       = volume;
-               req.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-               req.price        = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-               req.deviation    = InpSlippage;
-               req.magic        = InpMagicNumber;
-               req.type_filling = fillings[f];
-
-               if(OrderSend(req, res))
-               {
-                  if(res.retcode == TRADE_RETCODE_DONE) break;
-               }
-            }
-         }
-      }
-   }
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| Get First Open Position Price by Type                            |
-//+------------------------------------------------------------------+
-double GetFirstPositionOpenPrice(ENUM_POSITION_TYPE posType)
-{
-   for(int i = 0; i < PositionsTotal(); i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-      {
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
-         {
-            return PositionGetDouble(POSITION_PRICE_OPEN);
-         }
-      }
-   }
-   return 0.0;
 }
 
 //+------------------------------------------------------------------+
@@ -662,13 +488,13 @@ bool DeleteAllPendingOrdersGuaranteed()
 }
 
 //+------------------------------------------------------------------+
-//| Get Open Trade Stats, Directional Profits & Total Volume        |
+//| Get Open Trade Stats & Total Volume                              |
 //+------------------------------------------------------------------+
 double GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sellStopCount,
-                     double &totalBuyLot, double &totalSellLot, double &buyProfitUSD, double &sellProfitUSD)
+                     double &totalBuyLot, double &totalSellLot)
 {
    buyCount = 0; sellCount = 0; buyStopCount = 0; sellStopCount = 0;
-   totalBuyLot = 0; totalSellLot = 0; buyProfitUSD = 0.0; sellProfitUSD = 0.0;
+   totalBuyLot = 0; totalSellLot = 0;
    double totalProfit = 0.0;
 
    // Scan Positions
@@ -687,13 +513,11 @@ double GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sell
          {
             buyCount++;
             totalBuyLot += vol;
-            buyProfitUSD += pft;
          }
          else if(type == POSITION_TYPE_SELL)
          {
             sellCount++;
             totalSellLot += vol;
-            sellProfitUSD += pft;
          }
       }
    }
