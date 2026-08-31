@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Clean State Machine Dual Grid EA ($5000 Fresh Cap)  |
+//| Description: Dual Grid EA with Weekend Gap Protection           |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "81.00"
-#property description "Clean State Machine Dual Grid EA (Fresh $5000.00 Max USD Drawdown Parameter Name)"
+#property version   "82.00"
+#property description "Clean State Machine Dual Grid EA with Weekend Gap Protection (Deletes Pendings Before Friday Market Close)"
 
 #include <Trade\Trade.mqh>
 
@@ -34,6 +34,7 @@ input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
 input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
+input bool     InpClosePendingsFriday   = true;   // Weekend Gap Guard (Clean Pendings Before Friday Close)
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -63,7 +64,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Clean State Machine Dual Grid EA v81.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Weekend Gap Guard Dual Grid EA v82.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -87,14 +88,24 @@ void OnTick()
       return;
    }
 
-   // 2. Scan Account Trade Stats
+   // 2. Friday Weekend Gap Protection (Deletes Pendings at Friday 23:45)
+   if(InpClosePendingsFriday && IsFridayNightClose())
+   {
+      if(OrdersTotal() > 0)
+      {
+         DeleteOnePendingOrderPaced();
+      }
+      return;
+   }
+
+   // 3. Scan Account Trade Stats
    int buyCount = 0, sellCount = 0, buyStopCount = 0, sellStopCount = 0;
    double totalBuyLot = 0, totalSellLot = 0;
    double totalProfitUSD = GetTradeStats(buyCount, sellCount, buyStopCount, sellStopCount, totalBuyLot, totalSellLot);
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
+   // 4. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
    if(m_gridState == GRID_STATE_CLEANING)
    {
       if(totalPendingOrders > 0)
@@ -108,7 +119,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 5. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
@@ -118,13 +129,13 @@ void OnTick()
       return;
    }
 
-   // 5. STATE 2: EMPTY STATE -> START PLACEMENT
+   // 6. STATE 2: EMPTY STATE -> START PLACEMENT
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       m_gridState = GRID_STATE_PLACING_INITIAL;
    }
 
-   // 6. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
+   // 7. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -138,11 +149,21 @@ void OnTick()
       }
    }
 
-   // 7. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
+   // 8. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
    if(totalOpenPositions > 0)
    {
       ManagePaced11CounterHedges(buyCount, sellCount);
    }
+}
+
+//+------------------------------------------------------------------+
+//| Check if current time is Friday night near market close          |
+//+------------------------------------------------------------------+
+bool IsFridayNightClose()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   return (dt.day_of_week == 5 && dt.hour >= 23 && dt.min >= 40);
 }
 
 //+------------------------------------------------------------------+
