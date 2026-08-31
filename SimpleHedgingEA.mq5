@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Strict Spread Filter Dual Grid EA                   |
+//| Description: Unrestricted Execution Dual Grid EA                 |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "116.00"
-#property description "Strict Spread Protection EA (200 Points / 20 Pips Max Limit for Gold & FX) with Tiered DD ($50-$500)"
+#property version   "117.00"
+#property description "Unrestricted Execution Dual Grid EA: Spread Filter Removed for 100% Guaranteed Execution with Tiered DD ($50-$500)"
 
 #include <Trade\Trade.mqh>
 
@@ -40,10 +40,6 @@ input double   InpDDLimit3to4Trades   = 200.0;    // Max Loss for 3-4 Trades ($2
 input double   InpDDLimit5to6Trades   = 300.0;    // Max Loss for 5-6 Trades ($300.00)
 input double   InpDDLimit7to8Trades   = 400.0;    // Max Loss for 7-8 Trades ($400.00)
 input double   InpDDLimit9PlusTrades  = 500.0;    // Max Loss for 9+ Trades ($500.00)
-
-input group "=== Strict Ask-Bid Spread Protection ==="
-input bool     InpUseSpreadGuard      = true;     // Enable Strict Spread Filter
-input int      InpMaxSpreadPoints     = 200;      // Max Allowed Ask-Bid Spread (200 Points = 20 Pips Max Limit for Gold/FX)
 
 input group "=== Trading Schedule & Filters ==="
 input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for 24/7 execution)
@@ -84,8 +80,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Strict Spread Filter EA v115.0 Initialized. Max Spread: %d Points (%s)", 
-               InpMaxSpreadPoints, InpUseSpreadGuard ? "ENABLED" : "DISABLED");
+   PrintFormat("[INIT] Unrestricted Dual Grid EA v117.0 Initialized (Spread Filter Removed). Target: $%.2f", 
+               InpTargetProfitUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -268,20 +264,9 @@ void OnTick()
       ResetStateMachine();
    }
 
-   // 10. STATE: EMPTY STATE -> CHECK SPREAD GUARD & START PLACEMENT
+   // 10. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY (UNRESTRICTED)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
-      // STRICT ASK-BID SPREAD GUARD CHECK
-      if(InpUseSpreadGuard)
-      {
-         long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-         if(currentSpread > InpMaxSpreadPoints)
-         {
-            // Spread is too high! Pause trade placement completely!
-            return;
-         }
-      }
-
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
       {
          m_gridState = GRID_STATE_PLACING_INITIAL;
@@ -393,20 +378,10 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Exact M1 Zone Dual Grid (With Strict Spread Verification)  |
+//| Setup Exact M1 Zone Dual Grid (UNRESTRICTED)                     |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
-   // Double check Spread before placing each order
-   if(InpUseSpreadGuard)
-   {
-      long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-      if(currentSpread > InpMaxSpreadPoints)
-      {
-         return; // Pause order placement if spread spikes!
-      }
-   }
-
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
 
