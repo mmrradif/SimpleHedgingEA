@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Pre-Zone Terminating Dual Grid EA                  |
+//| Description: Standard Compliant Dual Grid EA (Target $5, Loss $500)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "104.00"
-#property description "Pre-Zone Terminating Dual Grid EA: 0.01 to 0.11 Lot grid placed BEFORE zone boundary and ENDING at 4400/4390 Zone (Target $5.00, Max Loss $500.00)"
+#property version   "105.00"
+#property description "MT5 Compliant Dual Grid EA: 11 BuyStops above Ask & 11 SellStops below Bid (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -75,7 +75,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Pre-Zone Terminating Grid EA v104.0 Initialized (Grid ENDS at Zone). Target: $%.2f, Max Loss: $%.2f", 
+   PrintFormat("[INIT] Standard Compliant Grid EA v105.0 Initialized. Target: $%.2f, Max Loss: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -350,9 +350,9 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Pre-Zone Terminating Dual Grid                             |
-//| Buy Grid ENDS at m1High (Buy #11 = 0.11 Lot @ m1High)           |
-//| Sell Grid ENDS at m1Low (Sell #11 = 0.11 Lot @ m1Low)           |
+//| Setup Standard MT5 Compliant Dual Grid                           |
+//| BuyStops placed validly ABOVE Ask                                |
+//| SellStops placed validly BELOW Bid                               |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -366,23 +366,18 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Buy Zone ENDS at m1High (e.g. 4400.00)
-   double buyEndPrice = m1High;
-   // Buy #1 (0.01 lot) starts 10 steps BEFORE m1High
-   double buyStartPrice = buyEndPrice - (10 * InpBaseGridStepPoints * point);
+   // Valid MT5 Buy Base: Above Ask
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+   // Valid MT5 Sell Base: Below Bid
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Sell Zone ENDS at m1Low (e.g. 4390.00)
-   double sellEndPrice = m1Low;
-   // Sell #1 (0.01 lot) starts 10 steps BEFORE m1Low (ABOVE m1Low)
-   double sellStartPrice = sellEndPrice + (10 * InpBaseGridStepPoints * point);
-
-   // Place 1 Buy Stop per tick (Buy #1 0.01 lot -> Buy #11 0.11 lot @ m1High)
+   // Place 1 Buy Stop per tick above Ask (0.01 to 0.11 Lot)
    if(m_buyGridPlacedCount < 11)
    {
       int i = m_buyGridPlacedCount + 1;
       double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep); // 0.01, 0.02 ... 0.11
-      double offsetFromStart = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(buyStartPrice + offsetFromStart, _Digits);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
       if(price > ask + stopLevel * point)
       {
@@ -398,13 +393,13 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place 1 Sell Stop per tick (Sell #1 0.01 lot -> Sell #11 0.11 lot @ m1Low)
+   // Place 1 Sell Stop per tick below Bid (0.01 to 0.11 Lot)
    if(m_sellGridPlacedCount < 11)
    {
       int i = m_sellGridPlacedCount + 1;
       double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep); // 0.01, 0.02 ... 0.11
-      double offsetFromStart = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(sellStartPrice - offsetFromStart, _Digits);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
       if(price < bid - stopLevel * point)
       {
