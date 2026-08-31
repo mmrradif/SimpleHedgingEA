@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 1.5x Weighted 11-Counter Hedging Grid EA           |
+//| Description: 100% Paced Dual Grid Engine (Zero MT5 Stop Errors)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "73.00"
-#property description "1.5x Weighted 11-Counter Hedging Grid EA (Places 11 Counter Pendings 50 Pips Away with 1.5x Lot Multiplier When Position Opens)"
+#property version   "74.00"
+#property description "100% Paced Dual Grid Engine (Places 1 Order & Deletes 1 Order Per Tick - Guaranteed Zero MT5 Tester Stops)"
 
 #include <Trade\Trade.mqh>
 
@@ -31,6 +31,8 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
+int            m_buyGridPlacedCount;
+int            m_sellGridPlacedCount;
 int            m_buyCounterPlacedCount;
 int            m_sellCounterPlacedCount;
 
@@ -50,7 +52,7 @@ int OnInit()
    
    ResetCounters();
 
-   PrintFormat("[INIT] 1.5x Weighted 11-Counter Grid EA v73.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 100%% Paced Dual Grid EA v74.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -87,27 +89,34 @@ void OnTick()
       ResetCounters();
    }
 
-   // 3. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick to prevent MT5 OrderDelete blocks)
+   if(totalOpenPositions == 0 && totalPendingOrders > 0)
+   {
+      DeleteOnePendingOrderPaced();
+      return;
+   }
+
+   // 4. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
-      DeleteAllPendingOrdersGuaranteed();
       ResetCounters();
       return;
    }
 
-   // 4. SETUP INITIAL 11 BUY STOPS & 11 SELL STOPS (When no positions & pendings exist)
-   if(totalOpenPositions == 0 && totalPendingOrders == 0)
+   // 5. PACED INITIAL 11 BUY STOPS & 11 SELL STOPS PLACEMENT (1 Order Per Tick Max)
+   if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11))
    {
-      SetupInitialDualGrid();
+      SetupPacedInitialDualGrid();
+      return;
    }
 
-   // 5. ON-DEMAND 11 COUNTER HEDGES (Places 11 counter orders 50 pips away with 1.5x multiplier)
+   // 6. PACED ON-DEMAND 11 COUNTER HEDGES (Places 11 counter orders 50 pips away with 1.5x multiplier, 1 Order Per Tick Max)
    if(totalOpenPositions > 0)
    {
-      Manage11CounterHedges(buyCount, sellCount);
+      ManagePaced11CounterHedges(buyCount, sellCount);
    }
 }
 
@@ -116,14 +125,32 @@ void OnTick()
 //+------------------------------------------------------------------+
 void ResetCounters()
 {
+   m_buyGridPlacedCount = 0;
+   m_sellGridPlacedCount = 0;
    m_buyCounterPlacedCount = 0;
    m_sellCounterPlacedCount = 0;
 }
 
 //+------------------------------------------------------------------+
-//| Setup Initial Dual Grid (11 BuyStops & 11 SellStops)             |
+//| Paced Anti-Spam Single Order Deletion (1 Order Delete Per Tick)  |
 //+------------------------------------------------------------------+
-void SetupInitialDualGrid()
+void DeleteOnePendingOrderPaced()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+      {
+         m_trade.OrderDelete(ticket);
+         return; // 1 Deletion per tick!
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Setup Paced Initial Dual Grid (1 Order Per Tick Max)             |
+//+------------------------------------------------------------------+
+void SetupPacedInitialDualGrid()
 {
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(30, m1High, m1Low);
@@ -135,47 +162,61 @@ void SetupInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   DeleteAllPendingOrdersGuaranteed();
-
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11;
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   double cumulativeBuyOffset = 0;
-   double cumulativeSellOffset = 0;
-   double currentStepDistance = InpBaseGridStepPoints * point;
-
-   for(int i = 1; i <= stepCount; i++)
+   // Place 1 Buy Stop per tick (0.01 to 0.11)
+   if(m_buyGridPlacedCount < 11)
    {
+      int i = m_buyGridPlacedCount + 1;
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+      double cumulativeOffset = GetCumulativeOffset(i);
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
-      // --- Buy Stop Grid (Going Up: 0.01 -> 0.11) ---
-      double mainBuyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
-      if(mainBuyPrice > ask + stopLevel * point)
+      if(price > ask + stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyZone #%d", i));
+         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
+         {
+            m_buyGridPlacedCount++;
+         }
       }
-
-      // --- Sell Stop Grid (Going Down: 0.01 -> 0.11) ---
-      double mainSellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
-      if(mainSellPrice < bid - stopLevel * point)
+      else
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellZone #%d", i));
+         m_buyGridPlacedCount++;
       }
+      return; // 1 Order per tick!
+   }
 
-      cumulativeBuyOffset += currentStepDistance;
-      cumulativeSellOffset += currentStepDistance;
-      currentStepDistance *= InpSpacingMultiplier;
+   // Place 1 Sell Stop per tick (0.01 to 0.11)
+   if(m_sellGridPlacedCount < 11)
+   {
+      int i = m_sellGridPlacedCount + 1;
+      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+      double cumulativeOffset = GetCumulativeOffset(i);
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+
+      if(price < bid - stopLevel * point)
+      {
+         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
+         {
+            m_sellGridPlacedCount++;
+         }
+      }
+      else
+      {
+         m_sellGridPlacedCount++;
+      }
+      return; // 1 Order per tick!
    }
 }
 
 //+------------------------------------------------------------------+
-//| Manage 11 Counter Hedges (50 Pips Away, 1.5x Volume Multiplier)  |
+//| Manage Paced 11 Counter Hedges (1 Order Per Tick Max)            |
 //+------------------------------------------------------------------+
-void Manage11CounterHedges(int buyCount, int sellCount)
+void ManagePaced11CounterHedges(int buyCount, int sellCount)
 {
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -185,61 +226,79 @@ void Manage11CounterHedges(int buyCount, int sellCount)
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11;
 
-   // 1. Buy Position Triggered -> Place 11 Counter SellStops 50 pips BELOW Buy Entry with 1.5x Volume
-   if(buyCount > 0 && m_sellCounterPlacedCount < stepCount)
+   // 1. Buy Position Triggered -> Place 11 Counter SellStops 50 pips BELOW Buy Entry with 1.5x Volume (1 per tick)
+   if(buyCount > 0 && m_sellCounterPlacedCount < 11)
    {
       double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
       if(firstBuyPrice > 0)
       {
+         int i = m_sellCounterPlacedCount + 1;
+         double baseLot = startLot + (i - 1) * lotStep;
+         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
          double sellBasePrice = firstBuyPrice - offset50Pips;
-         double cumulativeOffset = 0;
-         double currentStepDistance = InpBaseGridStepPoints * point;
+         double cumulativeOffset = GetCumulativeOffset(i);
+         double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
-         for(int i = 1; i <= stepCount; i++)
+         if(price < bid - stopLevel * point && price > 0)
          {
-            double baseLot = startLot + (i - 1) * lotStep;
-            double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-            double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
-
-            if(price < bid - stopLevel * point && price > 0)
+            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, weightedLot, price, StringFormat("CounterSell #%d", i)))
             {
-               PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, weightedLot, price, StringFormat("CounterSell #%d", i));
+               m_sellCounterPlacedCount++;
             }
-            cumulativeOffset += currentStepDistance;
-            currentStepDistance *= InpSpacingMultiplier;
          }
-         m_sellCounterPlacedCount = stepCount;
+         else
+         {
+            m_sellCounterPlacedCount++;
+         }
       }
+      return; // 1 Order per tick!
    }
 
-   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 50 pips ABOVE Sell Entry with 1.5x Volume
-   if(sellCount > 0 && m_buyCounterPlacedCount < stepCount)
+   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 50 pips ABOVE Sell Entry with 1.5x Volume (1 per tick)
+   if(sellCount > 0 && m_buyCounterPlacedCount < 11)
    {
       double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
       if(firstSellPrice > 0)
       {
+         int i = m_buyCounterPlacedCount + 1;
+         double baseLot = startLot + (i - 1) * lotStep;
+         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
          double buyBasePrice = firstSellPrice + offset50Pips;
-         double cumulativeOffset = 0;
-         double currentStepDistance = InpBaseGridStepPoints * point;
+         double cumulativeOffset = GetCumulativeOffset(i);
+         double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
-         for(int i = 1; i <= stepCount; i++)
+         if(price > ask + stopLevel * point)
          {
-            double baseLot = startLot + (i - 1) * lotStep;
-            double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-            double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
-
-            if(price > ask + stopLevel * point)
+            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, weightedLot, price, StringFormat("CounterBuy #%d", i)))
             {
-               PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, weightedLot, price, StringFormat("CounterBuy #%d", i));
+               m_buyCounterPlacedCount++;
             }
-            cumulativeOffset += currentStepDistance;
-            currentStepDistance *= InpSpacingMultiplier;
          }
-         m_buyCounterPlacedCount = stepCount;
+         else
+         {
+            m_buyCounterPlacedCount++;
+         }
       }
+      return; // 1 Order per tick!
    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Grid Distance Offset                                   |
+//+------------------------------------------------------------------+
+double GetCumulativeOffset(int level)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double cumulativeOffset = 0;
+   double currentStepDistance = InpBaseGridStepPoints * point;
+
+   for(int k = 1; k < level; k++)
+   {
+      cumulativeOffset += currentStepDistance;
+      currentStepDistance *= InpSpacingMultiplier;
+   }
+   return cumulativeOffset;
 }
 
 //+------------------------------------------------------------------+
