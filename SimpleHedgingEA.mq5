@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Anti-Grid-Lock Reversal Hedging EA                  |
+//| Description: Continuous Refreshing Dual Grid EA                  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "131.00"
-#property description "Anti-Grid-Lock EA: Deletes opposing pendings on trade trigger to prevent dual-grid locks, places dynamic counter-hedge, and exits clean at $0.50 profit target ($5000 Max DD)"
+#property version   "132.00"
+#property description "Continuous Refreshing Dual Grid EA: Automatically places 10 new BuyStops above and 10 new SellStops below whenever price swings, continuously catching reversals ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -37,11 +37,7 @@ input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
-
-input group "=== Counter Reversal Protection ==="
-input bool     InpUseCounterHedge     = true;     // Enable Counter-Hedge Protection (Places 1.5x counter order on trigger)
-input int      InpCounterOffsetPoints = 200;      // Counter Hedge Offset (200 Points = 20 Pips Below/Above Position)
-input double   InpCounterLotMultiplier= 1.5;      // Counter Lot Multiplier (1.5x Lot)
+input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
 
 input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
@@ -61,9 +57,9 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
 int              m_primaryGridPlacedCount;
+int              m_reversalGridPlacedCount;
 int              m_fastEmaHandle;
 int              m_slowEmaHandle;
-bool             m_counterHedgePlaced;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -85,7 +81,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Anti-Grid-Lock EA v131.0 Initialized. Dynamic Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Continuous Refreshing Dual Grid EA v132.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpProfitPerMicroLot, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -129,10 +125,10 @@ void OnTick()
       if(dynamicTargetUSD > InpMaxBasketTargetUSD) dynamicTargetUSD = InpMaxBasketTargetUSD;
    }
 
-   // 4. GUARANTEED PROFIT EXIT (PROFIT >= TARGET)
+   // 4. COMBINED NET BASKET PROFIT EXIT (ALL BUY & SELL TRADES CLOSED TOGETHER IN PROFIT)
    if(totalOpenPositions > 0 && totalProfitUSD >= dynamicTargetUSD)
    {
-      PrintFormat(">>> [CLEAN BASKET PROFIT EXIT!] Net Profit $%.2f >= Target $%.2f (Lot: %.2f). Liquidating all positions IN PROFIT...", 
+      PrintFormat(">>> [TOTAL COMBINED NET BASKET EXIT!] Net Combined Profit $%.2f >= Dynamic Target $%.2f (Total Lot: %.2f). Liquidating all positions IN PROFIT...", 
                   totalProfitUSD, dynamicTargetUSD, totalLot);
       CloseAllPositionsGuaranteed();      // CLOSE ALL BUY AND SELL POSITIONS TOGETHER!
       DeleteAllPendingOrdersGuaranteed(); // DELETE ALL PENDING ORDERS!
@@ -140,23 +136,11 @@ void OnTick()
       return;
    }
 
-   // 5. ANTI-GRID-LOCK ISOLATION: When a trade opens, delete opposing pending orders and manage counter hedge
-   if(totalOpenPositions > 0)
+   // 5. CONTINUOUS RE-ENTRY LOOP: If pending orders drop below 10 levels, automatically top-up new Buy & Sell Stops!
+   if(totalOpenPositions > 0 && (buyStopCount < 5 || sellStopCount < 5))
    {
-      if(buyCount > 0 && sellStopCount > 0 && !m_counterHedgePlaced)
-      {
-         DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP); // Delete unneeded sell stops
-      }
-      else if(sellCount > 0 && buyStopCount > 0 && !m_counterHedgePlaced)
-      {
-         DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP); // Delete unneeded buy stops
-      }
-
-      // Place single 1.5x Counter Hedge Order 20 pips away to protect against reversal
-      if(InpUseCounterHedge && !m_counterHedgePlaced)
-      {
-         ManageCounterHedgeOrders(buyCount, sellCount, totalBuyLot, totalSellLot);
-      }
+      // Refill pending orders around current market price so bounce-backs are caught!
+      SetupPacedInitialDualGrid();
    }
 
    // 6. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
@@ -168,12 +152,12 @@ void OnTick()
       }
    }
 
-   // 7. STATE: PACED PLACEMENT OF INITIAL DIRECTIONAL GRID
+   // 7. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
-      if(m_primaryGridPlacedCount < InpMaxGridLevels)
+      if(m_primaryGridPlacedCount < InpMaxGridLevels || m_reversalGridPlacedCount < InpMaxGridLevels)
       {
-         SetupPacedDirectionalGrid();
+         SetupPacedInitialDualGrid();
          return;
       }
       else
@@ -206,49 +190,11 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Place Dynamic 1.5x Counter Hedge Pending Order                   |
+//| Setup Continuous Refreshing Dual Grid                            |
+//| Primary Grid: 0.01 -> 0.11 Lot                                  |
+//| Reversal Grid: 0.11 -> 0.01 Lot (Reverse Lot Order)             |
 //+------------------------------------------------------------------+
-void ManageCounterHedgeOrders(int buyCount, int sellCount, double totalBuyLot, double totalSellLot)
-{
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-
-   if(buyCount > 0 && sellCount == 0) // Only Buy open -> Place Counter Sell Stop 20 pips below
-   {
-      double counterLot = NormalizeLot(totalBuyLot * InpCounterLotMultiplier);
-      double counterPrice = NormalizeDouble(bid - InpCounterOffsetPoints * point, _Digits);
-
-      if(counterPrice < bid - stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, counterLot, counterPrice, "CounterHedge-SellStop"))
-         {
-            m_counterHedgePlaced = true;
-         }
-      }
-   }
-   else if(sellCount > 0 && buyCount == 0) // Only Sell open -> Place Counter Buy Stop 20 pips above
-   {
-      double counterLot = NormalizeLot(totalSellLot * InpCounterLotMultiplier);
-      double counterPrice = NormalizeDouble(ask + InpCounterOffsetPoints * point, _Digits);
-
-      if(counterPrice > ask + stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, counterLot, counterPrice, "CounterHedge-BuyStop"))
-         {
-            m_counterHedgePlaced = true;
-         }
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Setup Directional Grid based on EMA                              |
-//| Bullish: 11 BuyStops at M1 High (0.01 -> 0.11 lot)             |
-//| Bearish: 11 SellStops at M1 Low (0.01 -> 0.11 lot)             |
-//+------------------------------------------------------------------+
-void SetupPacedDirectionalGrid()
+void SetupPacedInitialDualGrid()
 {
    int trendDir = GetTrendDirection();
 
@@ -262,10 +208,23 @@ void SetupPacedDirectionalGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   ENUM_ORDER_TYPE orderType = (trendDir >= 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
-   double basePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
+   ENUM_ORDER_TYPE primaryType = (trendDir >= 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   ENUM_ORDER_TYPE reversalType = (trendDir >= 0) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
 
-   // Place 11 Directional Pendings (0.01 to 0.11 lot)
+   double primaryBasePrice = 0, reversalBasePrice = 0;
+
+   if(trendDir >= 0) // Bullish Trend: BuyStops at M1 High (0.01->0.11), SellStops 20 pips below (0.11->0.01 REVERSE)
+   {
+      primaryBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+      reversalBasePrice = MathMin(primaryBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
+   }
+   else // Bearish Trend: SellStops at M1 Low (0.01->0.11), BuyStops 20 pips above (0.11->0.01 REVERSE)
+   {
+      primaryBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+      reversalBasePrice = MathMax(primaryBasePrice + InpReversalOffsetPoints * point, ask + (stopLevel + 15) * point);
+   }
+
+   // 1. Primary Grid Placement (0.01 -> 0.11 Lot Order)
    if(m_primaryGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_primaryGridPlacedCount + 1;
@@ -273,13 +232,13 @@ void SetupPacedDirectionalGrid()
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
       double price = 0;
 
-      if(orderType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(basePrice + cumulativeOffset, _Digits);
-      else price = NormalizeDouble(basePrice - cumulativeOffset, _Digits);
+      if(primaryType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(primaryBasePrice + cumulativeOffset, _Digits);
+      else price = NormalizeDouble(primaryBasePrice - cumulativeOffset, _Digits);
 
-      if((orderType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
-         (orderType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
+      if((primaryType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
+         (primaryType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
       {
-         if(PlacePendingOrderSafe(orderType, lot, price, StringFormat("PrimaryGrid #%d", i)))
+         if(PlacePendingOrderSafe(primaryType, lot, price, StringFormat("PrimaryZone #%d", i)))
          {
             m_primaryGridPlacedCount++;
          }
@@ -287,6 +246,32 @@ void SetupPacedDirectionalGrid()
       else
       {
          m_primaryGridPlacedCount++;
+      }
+      return; // 1 Order per tick!
+   }
+
+   // 2. Reversal Safety Grid Placement (REVERSE LOT ORDER: 0.11 -> 0.01)
+   if(m_reversalGridPlacedCount < InpMaxGridLevels)
+   {
+      int i = m_reversalGridPlacedCount + 1;
+      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = 0;
+
+      if(reversalType == ORDER_TYPE_BUY_STOP) price = NormalizeDouble(reversalBasePrice + cumulativeOffset, _Digits);
+      else price = NormalizeDouble(reversalBasePrice - cumulativeOffset, _Digits);
+
+      if((reversalType == ORDER_TYPE_BUY_STOP && price > ask + stopLevel * point) ||
+         (reversalType == ORDER_TYPE_SELL_STOP && price < bid - stopLevel * point))
+      {
+         if(PlacePendingOrderSafe(reversalType, lot, price, StringFormat("ReversalSafety #%d", i)))
+         {
+            m_reversalGridPlacedCount++;
+         }
+      }
+      else
+      {
+         m_reversalGridPlacedCount++;
       }
       return; // 1 Order per tick!
    }
@@ -319,25 +304,7 @@ void ResetStateMachine()
 {
    m_gridState               = GRID_STATE_EMPTY;
    m_primaryGridPlacedCount  = 0;
-   m_counterHedgePlaced      = false;
-}
-
-//+------------------------------------------------------------------+
-//| Delete pending orders by type (BUY_STOP or SELL_STOP)            |
-//+------------------------------------------------------------------+
-void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
-{
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
-      {
-         if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE) == targetType)
-         {
-            m_trade.OrderDelete(ticket);
-         }
-      }
-   }
+   m_reversalGridPlacedCount = 0;
 }
 
 //+------------------------------------------------------------------+
