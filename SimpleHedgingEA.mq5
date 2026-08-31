@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Dynamic Profit Scaling & Zero-Hanging Guard EA     |
+//| Description: Combined Net Basket Liquidator Dual Grid EA         |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "127.00"
-#property description "Zero-Hanging EA: Uses Proportional Dynamic Profit Scaling ($0.50 per 0.01 Lot) so single trades close fast in 5 pips ($0.50) without hanging ($5000 Max DD)"
+#property version   "128.00"
+#property description "Combined Net Basket Liquidator EA: Always closes ALL Buy and Sell trades combined together as a single unified basket ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -17,13 +17,11 @@ enum ENUM_GRID_STATE
    GRID_STATE_EMPTY,
    GRID_STATE_PLACING_INITIAL,
    GRID_STATE_ACTIVE,
-   GRID_STATE_CLEANING_BUY,
-   GRID_STATE_CLEANING_SELL,
    GRID_STATE_CLEANING_ALL
 };
 
 //--- Input Parameters
-input group "=== Dynamic Profit Target Settings ==="
+input group "=== Combined Basket Profit Target Settings ==="
 input double   InpProfitPerMicroLot   = 0.50;     // Profit Target per 0.01 Lot ($0.50 USD = 5 Pips Fast Exit)
 input double   InpMinBasketTargetUSD  = 0.50;     // Minimum Target Profit for Single 0.01 Trade ($0.50)
 input double   InpMaxBasketTargetUSD  = 5.00;     // Maximum Cap Target Profit ($5.00)
@@ -62,8 +60,6 @@ CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
 int              m_buyGridPlacedCount;
 int              m_sellGridPlacedCount;
-bool             m_buySideClosed;
-bool             m_sellSideClosed;
 int              m_fastEmaHandle;
 int              m_slowEmaHandle;
 
@@ -87,7 +83,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Zero-Hanging EA v127.0 Initialized. Dynamic Target: $%.2f per 0.01 Lot, Max DD: $%.2f", 
+   PrintFormat("[INIT] Combined Net Basket Liquidator EA v128.0 Initialized. Target: $%.2f per 0.01 Lot, Max DD: $%.2f", 
                InpProfitPerMicroLot, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -121,7 +117,7 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. DYNAMIC PROPORTIONAL PROFIT SCALING ($0.50 PER 0.01 LOT)
+   // 3. DYNAMIC PROPORTIONAL PROFIT SCALING ($0.50 PER 0.01 LOT COMBINED)
    double totalLot = totalBuyLot + totalSellLot;
    double dynamicTargetUSD = InpMinBasketTargetUSD;
    if(totalLot > 0)
@@ -131,50 +127,18 @@ void OnTick()
       if(dynamicTargetUSD > InpMaxBasketTargetUSD) dynamicTargetUSD = InpMaxBasketTargetUSD;
    }
 
-   // 4. TOTAL BASKET PROFIT EXIT (DYNAMIC TARGET)
+   // 4. COMBINED NET BASKET PROFIT EXIT (ALL BUY & SELL TRADES CLOSED TOGETHER)
    if(totalOpenPositions > 0 && totalProfitUSD >= dynamicTargetUSD)
    {
-      PrintFormat(">>> [FAST BASKET PROFIT EXIT!] Net Profit $%.2f >= Dynamic Target $%.2f (Lot: %.2f). Closing positions...", 
+      PrintFormat(">>> [TOTAL COMBINED NET BASKET EXIT!] Net Combined Profit $%.2f >= Dynamic Target $%.2f (Total Lot: %.2f). Closing ALL Buy & Sell positions...", 
                   totalProfitUSD, dynamicTargetUSD, totalLot);
-      CloseAllPositionsGuaranteed();
-      DeleteAllPendingOrdersGuaranteed();
+      CloseAllPositionsGuaranteed();      // CLOSE ALL BUY AND SELL POSITIONS TOGETHER!
+      DeleteAllPendingOrdersGuaranteed(); // DELETE ALL PENDING ORDERS!
       ResetStateMachine();
       return;
    }
 
-   // 5. INDEPENDENT BUY-SIDE PROFIT EXIT
-   double buyTargetUSD = MathMax(InpMinBasketTargetUSD, (totalBuyLot / 0.01) * InpProfitPerMicroLot);
-   if(buyCount > 0 && buyProfitUSD >= buyTargetUSD)
-   {
-      PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side...", buyProfitUSD, buyTargetUSD);
-      ClosePositionsByType(POSITION_TYPE_BUY);
-      DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
-      m_buySideClosed = true;
-      m_buyGridPlacedCount = 0;
-      m_gridState = (sellCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_BUY;
-      return;
-   }
-
-   // 6. INDEPENDENT SELL-SIDE PROFIT EXIT
-   double sellTargetUSD = MathMax(InpMinBasketTargetUSD, (totalSellLot / 0.01) * InpProfitPerMicroLot);
-   if(sellCount > 0 && sellProfitUSD >= sellTargetUSD)
-   {
-      PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side...", sellProfitUSD, sellTargetUSD);
-      ClosePositionsByType(POSITION_TYPE_SELL);
-      DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
-      m_sellSideClosed = true;
-      m_sellGridPlacedCount = 0;
-      m_gridState = (buyCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_SELL;
-      return;
-   }
-
-   // 7. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
-   if(m_buySideClosed && m_sellSideClosed && totalOpenPositions == 0 && totalPendingOrders == 0)
-   {
-      ResetStateMachine();
-   }
-
-   // 8. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
+   // 5. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -183,7 +147,7 @@ void OnTick()
       }
    }
 
-   // 9. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
+   // 6. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < InpMaxGridLevels || m_sellGridPlacedCount < InpMaxGridLevels)
@@ -334,8 +298,6 @@ void ResetStateMachine()
    m_gridState           = GRID_STATE_EMPTY;
    m_buyGridPlacedCount  = 0;
    m_sellGridPlacedCount = 0;
-   m_buySideClosed       = false;
-   m_sellSideClosed      = false;
 }
 
 //+------------------------------------------------------------------+
@@ -350,24 +312,6 @@ void DeleteOnePendingOrderPaced()
       {
          m_trade.OrderDelete(ticket);
          return; // 1 Deletion per tick!
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Delete pending orders by type (BUY_STOP or SELL_STOP)            |
-//+------------------------------------------------------------------+
-void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
-{
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
-      {
-         if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE) == targetType)
-         {
-            m_trade.OrderDelete(ticket);
-         }
       }
    }
 }
@@ -514,7 +458,7 @@ void ClosePositionsByType(ENUM_POSITION_TYPE posType)
 }
 
 //+------------------------------------------------------------------+
-//| Close All Open Positions                                         |
+//| Close All Open Positions Guaranteed                              |
 //+------------------------------------------------------------------+
 void CloseAllPositionsGuaranteed()
 {
@@ -523,7 +467,7 @@ void CloseAllPositionsGuaranteed()
 }
 
 //+------------------------------------------------------------------+
-//| Delete All Pending Orders                                        |
+//| Delete All Pending Orders Guaranteed                             |
 //+------------------------------------------------------------------+
 void DeleteAllPendingOrdersGuaranteed()
 {
