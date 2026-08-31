@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Interleaved Mirrored Counter-Hedging Grid EA        |
+//| Description: Co-Located Overlapping Dual-Hedging Grid EA        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "53.00"
-#property description "Interleaved Mirrored Counter-Hedging Grid EA (Paired Buy/Sell Stops at Every Level to Prevent Fakeout Losses)"
+#property version   "54.00"
+#property description "Co-Located Overlapping Dual-Hedging Grid EA (Buy Stop & Sell Stop Overlapped at Every Level)"
 
 #include <Trade\Trade.mqh>
 
@@ -18,7 +18,6 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - 11 Levels (0.01 -> 0.11)
 input int      InpBaseGridStepPoints  = 200;      // Distance Between Main Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpCounterHedgeGapPts  = 50;       // Gap for Counter-Hedge Pendings (50 Points = 5 Pips)
 input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All Buy + Sell)
 
 input group "=== Risk Control & Drawdown Cap ==="
@@ -46,7 +45,7 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] Mirrored Hedging EA v53.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Co-Located Overlapping Hedging EA v54.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -89,7 +88,7 @@ void OnTick()
       return;
    }
 
-   // 4. SETUP INTERLEAVED MIRRORED PENDING GRID (When no positions and no pendings exist)
+   // 4. SETUP CO-LOCATED OVERLAPPING PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -139,7 +138,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Interleaved Mirrored Pending Grid (11 Pairs Buy/Sell Stops)|
+//| Setup Co-Located Overlapping Grid (Buy/Sell Stops at Every Level)|
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -157,7 +156,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11; // 11 Levels (0.01 to 0.11 Lot)
+   int stepCount = 11; // 11 Overlapped Levels (0.01 to 0.11 Lot)
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -165,31 +164,30 @@ void SetupProgressivePendingGrid()
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
-   double hedgeGap = InpCounterHedgeGapPts * point;
 
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
 
-      // --- Upper Level Pair (Buy Stop Main + Paired Sell Stop Counter Hedge) ---
+      // --- Upper Grid Level i ---
       double buyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
-      double pairedSellPrice = NormalizeDouble(buyPrice - hedgeGap, _Digits);
+      double sellPriceUpper = NormalizeDouble(buyPrice - (stopLevel + 15) * point, _Digits);
 
       if(buyPrice > ask + stopLevel * point)
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, buyPrice, StringFormat("BuyStop #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, buyPrice, StringFormat("UpperBuyStop #%d", i));
 
-      if(pairedSellPrice < bid - stopLevel * point)
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, pairedSellPrice, StringFormat("HedgeSell #%d", i));
+      if(sellPriceUpper < bid - stopLevel * point)
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, sellPriceUpper, StringFormat("UpperSellStop #%d", i));
 
-      // --- Lower Level Pair (Sell Stop Main + Paired Buy Stop Counter Hedge) ---
+      // --- Lower Grid Level i ---
       double sellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
-      double pairedBuyPrice = NormalizeDouble(sellPrice + hedgeGap, _Digits);
+      double buyPriceLower = NormalizeDouble(sellPrice + (stopLevel + 15) * point, _Digits);
 
       if(sellPrice < bid - stopLevel * point)
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, sellPrice, StringFormat("SellStop #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, sellPrice, StringFormat("LowerSellStop #%d", i));
 
-      if(pairedBuyPrice > ask + stopLevel * point)
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, pairedBuyPrice, StringFormat("HedgeBuy #%d", i));
+      if(buyPriceLower > ask + stopLevel * point)
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, buyPriceLower, StringFormat("LowerBuyStop #%d", i));
 
       cumulativeBuyOffset += currentStepDistance;
       cumulativeSellOffset += currentStepDistance;
