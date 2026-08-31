@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Ultra-Fast Micro Profit Grid EA                     |
+//| Description: Fully Restored Profitable Grid EA (Fast $500 Exit)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "47.00"
-#property description "Ultra-Fast Micro Profit Grid EA (0.01: $0.20, 0.02: $0.40, 3-5: $1.00, 6+: $0.50)"
+#property version   "48.00"
+#property description "Fully Restored Profitable Grid EA (Instant $500 Liquidation & Hard TP Protection)"
 
 #include <Trade\Trade.mqh>
 
@@ -16,8 +16,9 @@ input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
-input int      InpBaseGridStepPoints  = 250;      // Base Distance Between Levels (250 Points = 25 Pips)
-input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Original 1.20)
+input int      InpBaseGridStepPoints  = 180;      // Optimal Distance Between Levels (180 Points = 18 Pips)
+input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
+input double   InpTargetProfitUSD     = 2.00;     // Target Net Profit per Basket ($2.00 Close All)
 
 input group "=== Risk Control & Direction Lock ==="
 input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
@@ -45,7 +46,8 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] Ultra-Fast Micro Profit Grid EA v47.0 Initialized. Max DD Limit: $%.2f", InpMaxDrawdownUSD);
+   PrintFormat("[INIT] Restored Profitable Grid EA v48.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+               InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -58,22 +60,11 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Ultra-Fast Micro Profit Target Calculator                        |
-//+------------------------------------------------------------------+
-double GetTargetProfitForCount(int tradeCount)
-{
-   if(tradeCount == 1) return 0.20; // 0.01 lot requires only 2 pips to close ($0.20) -> INSTANT EXIT!
-   if(tradeCount == 2) return 0.40; // 0.01+0.02 lot requires only 1.3 pips ($0.40) -> INSTANT EXIT!
-   if(tradeCount >= 3 && tradeCount <= 5) return 1.00; // 3-5 trades exit at $1.00 profit
-   return 0.50; // 6+ trades exit at $0.50 quick break-even rescue
-}
-
-//+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // 1. Strict Emergency Drawdown Check (Highest Priority)
+   // 1. Strict Emergency Drawdown Check (POSITIONS CLOSED FIRST!)
    if(CheckEquityProtection())
    {
       return;
@@ -99,21 +90,19 @@ void OnTick()
       }
    }
 
-   // 4. ULTRA-FAST MICRO PROFIT EXIT (0.01: $0.20, 0.02: $0.40, 3-5: $1.00, 6+: $0.50)
-   if(totalOpenPositions > 0)
+   // 4. GUARANTEED BASKET PROFIT EXIT ($2.00 TARGET)
+   double currentTargetUSD = InpTargetProfitUSD;
+   if(totalOpenPositions >= 10) currentTargetUSD = 0.50; // Instant exit on 10th order
+
+   if(totalOpenPositions > 0 && totalProfitUSD >= currentTargetUSD)
    {
-      double requiredTargetUSD = GetTargetProfitForCount(totalOpenPositions);
+      PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing positions...", 
+                  totalProfitUSD, currentTargetUSD, totalOpenPositions);
+      CloseAllPositionsGuaranteed();
+      DeleteAllPendingOrdersGuaranteed();
       
-      if(totalProfitUSD >= requiredTargetUSD)
-      {
-         PrintFormat(">>> [MICRO PROFIT HIT!] Trades: %d, Profit: $%.2f >= $%.2f. Closing positions...", 
-                     totalOpenPositions, totalProfitUSD, requiredTargetUSD);
-         CloseAllPositionsGuaranteed();
-         DeleteAllPendingOrdersGuaranteed();
-         
-         SetupProgressivePendingGrid();
-         return;
-      }
+      SetupProgressivePendingGrid();
+      return;
    }
 
    // 5. SETUP 10-ORDER PENDING GRID (When no positions and no pendings exist)
@@ -186,8 +175,8 @@ void SetupProgressivePendingGrid()
    double lotStep = 0.01;
    int stepCount = 10;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 20) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 20) * point);
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -228,8 +217,8 @@ void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 
-   m1High = ask + (50 * point);
-   m1Low = bid - (50 * point);
+   m1High = ask + (40 * point);
+   m1Low = bid - (40 * point);
 
    if(lookback <= 0) return;
 
@@ -419,7 +408,7 @@ double GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sell
 }
 
 //+------------------------------------------------------------------+
-//| Emergency Equity Protection Check (Percentage & USD Drawdown Cap)|
+//| Emergency Equity Protection Check (POSITIONS CLOSED FIRST!)      |
 //+------------------------------------------------------------------+
 bool CheckEquityProtection()
 {
@@ -434,19 +423,19 @@ bool CheckEquityProtection()
       // 1. Hard Max USD Drawdown Cap ($500.00)
       if(InpMaxDrawdownUSD > 0 && floatingLossUSD >= InpMaxDrawdownUSD)
       {
-         PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Forcing liquidations...", 
+         PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Instant liquidation...", 
                      floatingLossUSD, InpMaxDrawdownUSD);
-         DeleteAllPendingOrdersGuaranteed();
-         CloseAllPositionsGuaranteed();
+         CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
+         DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
          return true;
       }
 
       // 2. Hard Equity Percent Protection
       if(drawdownPercent >= InpMaxDrawdownPercent)
       {
-         PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Forcing liquidations...", drawdownPercent);
-         DeleteAllPendingOrdersGuaranteed();
-         CloseAllPositionsGuaranteed();
+         PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
+         CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
+         DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
          return true;
       }
    }
