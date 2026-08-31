@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Paced Anti-Spam Order Deletion Grid EA              |
+//| Description: 11-Level Paced Dual Grid EA                        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "69.00"
-#property description "Paced Anti-Spam Order Deletion Grid EA (Places 1 Order & Deletes 1 Order Per Tick - 100% Zero MT5 Block Errors)"
+#property version   "70.00"
+#property description "11-Level Paced Dual Grid EA (11 BuyStops in Buy Zone + 11 SellStops in Sell Zone - Paced Anti-Spam Zero Block)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,7 +15,7 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplier (1.5x)
+input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Orders (0.01 -> 0.11)
 input int      InpBaseGridStepPoints  = 200;      // Grid Distance Between Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips)
@@ -58,7 +58,7 @@ int OnInit()
    
    ResetCounters();
 
-   PrintFormat("[INIT] Paced Anti-Spam Grid EA v69.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 11-Level Paced Dual Grid EA v70.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -102,7 +102,7 @@ void OnTick()
       }
    }
 
-   // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick if cleanup is needed)
+   // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick)
    if(totalOpenPositions == 0 && totalPendingOrders > 0)
    {
       DeleteOnePendingOrderPaced();
@@ -132,17 +132,17 @@ void OnTick()
       return;
    }
 
-   // 6. PACED INITIAL GRID PLACEMENT (1 Order Per Tick Max)
-   if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 10 || m_sellGridPlacedCount < 10))
+   // 6. PACED 11-LEVEL INITIAL GRID PLACEMENT (1 Order Per Tick Max)
+   if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11))
    {
-      SetupPacedInitialGrid();
+      SetupPaced11InitialGrid();
       return;
    }
 
-   // 7. PACED WEIGHTED COUNTER HEDGE PLACEMENT (1.5x Lot Multiplier, 1 Order Per Tick Max)
+   // 7. PACED 11-LEVEL COUNTER HEDGE PLACEMENT (1 Order Per Tick Max)
    if(totalOpenPositions > 0)
    {
-      ManagePacedWeightedCounterHedges(buyCount, sellCount);
+      ManagePaced11CounterHedges(buyCount, sellCount);
    }
 }
 
@@ -175,9 +175,9 @@ void DeleteOnePendingOrderPaced()
 }
 
 //+------------------------------------------------------------------+
-//| Setup Paced Initial Pending Grid (1 Order Per Tick)              |
+//| Setup Paced 11-Level Initial Pending Grid (1 Order Per Tick)     |
 //+------------------------------------------------------------------+
-void SetupPacedInitialGrid()
+void SetupPaced11InitialGrid()
 {
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(30, m1High, m1Low);
@@ -195,8 +195,8 @@ void SetupPacedInitialGrid()
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Place 1 Buy Stop per tick
-   if(m_buyGridPlacedCount < 10)
+   // Place 11 Buy Stops in Buy Zone (1 per tick: 0.01 to 0.11)
+   if(m_buyGridPlacedCount < 11)
    {
       int i = m_buyGridPlacedCount + 1;
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
@@ -205,7 +205,7 @@ void SetupPacedInitialGrid()
 
       if(price > ask + stopLevel * point)
       {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyStop #%d", i)))
+         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
          {
             m_buyGridPlacedCount++;
          }
@@ -217,8 +217,8 @@ void SetupPacedInitialGrid()
       return;
    }
 
-   // Place 1 Sell Stop per tick
-   if(m_sellGridPlacedCount < 10)
+   // Place 11 Sell Stops in Sell Zone (1 per tick: 0.01 to 0.11)
+   if(m_sellGridPlacedCount < 11)
    {
       int i = m_sellGridPlacedCount + 1;
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
@@ -227,7 +227,7 @@ void SetupPacedInitialGrid()
 
       if(price < bid - stopLevel * point)
       {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellStop #%d", i)))
+         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
          {
             m_sellGridPlacedCount++;
          }
@@ -241,9 +241,9 @@ void SetupPacedInitialGrid()
 }
 
 //+------------------------------------------------------------------+
-//| Manage Paced Weighted Counter Hedges (1.5x Volume Multiplier)     |
+//| Manage Paced 11-Level Counter Hedges (1 Order Per Tick)          |
 //+------------------------------------------------------------------+
-void ManagePacedWeightedCounterHedges(int buyCount, int sellCount)
+void ManagePaced11CounterHedges(int buyCount, int sellCount)
 {
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -254,23 +254,21 @@ void ManagePacedWeightedCounterHedges(int buyCount, int sellCount)
    double startLot = 0.01;
    double lotStep = 0.01;
 
-   // 1. Buy triggered -> Place 10 Weighted Counter Sell Stops (1.5x Volume)
-   if(buyCount > 0 && m_sellCounterPlacedCount < 10)
+   // 1. Buy triggered -> Place 11 Counter Sell Stops (1 per tick: 0.01 to 0.11)
+   if(buyCount > 0 && m_sellCounterPlacedCount < 11)
    {
       double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
       if(firstBuyPrice > 0)
       {
          int i = m_sellCounterPlacedCount + 1;
-         double baseLot = startLot + (i - 1) * lotStep;
-         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-
+         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
          double sellBasePrice = firstBuyPrice - hedgeGap;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
          if(price < bid - stopLevel * point && price > 0)
          {
-            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, weightedLot, price, StringFormat("CounterSell #%d", i)))
+            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("CounterSell #%d", i)))
             {
                m_sellCounterPlacedCount++;
             }
@@ -283,23 +281,21 @@ void ManagePacedWeightedCounterHedges(int buyCount, int sellCount)
       return;
    }
 
-   // 2. Sell triggered -> Place 10 Weighted Counter Buy Stops (1.5x Volume)
-   if(sellCount > 0 && m_buyCounterPlacedCount < 10)
+   // 2. Sell triggered -> Place 11 Counter Buy Stops (1 per tick: 0.01 to 0.11)
+   if(sellCount > 0 && m_buyCounterPlacedCount < 11)
    {
       double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
       if(firstSellPrice > 0)
       {
          int i = m_buyCounterPlacedCount + 1;
-         double baseLot = startLot + (i - 1) * lotStep;
-         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-
+         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
          double buyBasePrice = firstSellPrice + hedgeGap;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
          if(price > ask + stopLevel * point)
          {
-            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, weightedLot, price, StringFormat("CounterBuy #%d", i)))
+            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("CounterBuy #%d", i)))
             {
                m_buyCounterPlacedCount++;
             }
