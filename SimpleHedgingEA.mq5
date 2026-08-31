@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Explicit 20 Pips ($2.00 Gold Price Step) EA        |
+//| Description: EMA Signal Triggered Hedging EA (No Refills)        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "141.00"
-#property description "Explicit 20 Pips EA: Exact $2.00 Gold price step (20 Pips = e.g. 2602.00 -> 2604.00), BD 08:00 AM - 08:00 PM time window ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "142.00"
+#property description "EMA Signal Triggered EA: Places pending grids ONLY when EMA trend signal changes (No continuous refills). Closes clean at 08:00 PM BD Time ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,9 +15,7 @@
 enum ENUM_GRID_STATE
 {
    GRID_STATE_EMPTY,
-   GRID_STATE_PLACING_INITIAL,
-   GRID_STATE_ACTIVE,
-   GRID_STATE_CLEANING_ALL
+   GRID_STATE_ACTIVE
 };
 
 //--- Input Parameters
@@ -26,19 +24,17 @@ input double   InpProfitPerMicroLot   = 0.50;     // Profit Target per 0.01 Lot 
 input double   InpMinBasketTargetUSD  = 0.50;     // Minimum Target Profit for Single 0.01 Trade ($0.50)
 input double   InpMaxBasketTargetUSD  = 5.00;     // Maximum Cap Target Profit ($5.00)
 
-input group "=== Trend & Direction Filter ==="
-input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direction Bias
+input group "=== EMA Trend Signal Filter ==="
+input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direction Signal
 input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
 input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
 
-input group "=== Explicit 20 Pips ($2.00 Gold Step) & Lot Settings ==="
+input group "=== 20 Pips ($2.00 Gold Step) & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpGridStepPips        = 20.0;     // EXACT 20 PIPS GAP ($2.00 Gold Price Difference e.g. 2602 -> 2604)
-input double   InpReversalOffsetPips  = 20.0;     // EXACT 20 PIPS REVERSAL OFFSET ($2.00 Gold Price Offset)
-input double   InpMaxTotalVolumeCapLot = 3.96;    // Hard Total Volume Cap (3.96 Lots = 6 Full Cycles Cap)
 
 input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
@@ -58,6 +54,7 @@ CTrade           m_trade;
 ENUM_GRID_STATE  m_gridState;
 int              m_fastEmaHandle;
 int              m_slowEmaHandle;
+int              m_lastExecutedTrendDir; // Track trend signal state
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -77,10 +74,11 @@ int OnInit()
    m_fastEmaHandle = iMA(_Symbol, PERIOD_M1, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    m_slowEmaHandle = iMA(_Symbol, PERIOD_M1, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
 
-   ResetStateMachine();
+   m_gridState = GRID_STATE_EMPTY;
+   m_lastExecutedTrendDir = 0;
 
-   PrintFormat("[INIT] Explicit 20 Pips EA v141.0 Initialized. Grid Step: %.1f Pips ($%.2f Price Gap), Max DD: $%.2f", 
-               InpGridStepPips, InpGridStepPips * 0.10, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] EMA Signal Triggered EA v142.0 Initialized (No Refills). Server Window: %02d:00-%02d:00 (BD 08:00-20:00), Max DD: $%.2f", 
+               InpServerStartHour, InpServerEndHour, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -130,7 +128,8 @@ void OnTick()
                   totalProfitUSD, dynamicTargetUSD, totalLot);
       CloseAllPositionsGuaranteed();      // CLOSE ALL BUY AND SELL POSITIONS TOGETHER!
       DeleteAllPendingOrdersGuaranteed(); // DELETE ALL PENDING ORDERS!
-      ResetStateMachine();
+      m_gridState = GRID_STATE_EMPTY;
+      m_lastExecutedTrendDir = 0;
       return;
    }
 
@@ -140,7 +139,6 @@ void OnTick()
    // OUTSIDE TRADING HOURS (Night / Outside BD 08:00 AM - 08:00 PM):
    if(InpUseTimeWindow && !insideTradingWindow)
    {
-      // A. Delete ALL pending orders immediately so no pending hangs overnight!
       if(totalPendingOrders > 0)
       {
          PrintFormat(">>> [TIME WINDOW CLOSED] Server Hour outside %02d:00-%02d:00. Deleting all %d pending orders...", 
@@ -148,34 +146,52 @@ void OnTick()
          DeleteAllPendingOrdersGuaranteed();
       }
 
-      // B. If open positions exist and net profit is breakeven/positive, close clean!
       if(totalOpenPositions > 0 && totalProfitUSD >= 0.0)
       {
          PrintFormat(">>> [TIME WINDOW NIGHT CLOSE] Profit $%.2f >= $0.00. Closing all positions clean for the night...", totalProfitUSD);
          CloseAllPositionsGuaranteed();
-         ResetStateMachine();
+         m_gridState = GRID_STATE_EMPTY;
+         m_lastExecutedTrendDir = 0;
       }
 
-      return; // Do NOT place or refill any new trades outside trading window!
+      return; // Do NOT place any new trades outside trading window!
    }
 
-   // 6. INSIDE TRADING HOURS (BD 08:00 AM - 08:00 PM): CONTINUOUS REFILL WITH 20 PIPS ($2.00 GOLD PRICE STEP)
-   if(insideTradingWindow && totalLot < InpMaxTotalVolumeCapLot)
+   // 6. INSIDE TRADING HOURS: PLACE PENDING GRIDS ONLY WHEN EMA TREND SIGNAL CHANGES (NO REFILLS)
+   if(insideTradingWindow)
    {
-      RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
+      int currentTrendDir = GetTrendDirection();
+
+      // If no positions are open AND no pendings exist -> Place Grid for current EMA trend signal!
+      if(totalOpenPositions == 0 && totalPendingOrders == 0)
+      {
+         PlaceEMATrendGrid(currentTrendDir);
+         m_lastExecutedTrendDir = currentTrendDir;
+         m_gridState = GRID_STATE_ACTIVE;
+         return;
+      }
+
+      // If market reverses and EMA trend signal flips (e.g. Bullish -> Bearish) while trades are open:
+      // Place opposing REVERSE EMA pending grid!
+      if(totalOpenPositions > 0 && currentTrendDir != 0 && currentTrendDir != m_lastExecutedTrendDir)
+      {
+         PrintFormat(">>> [REVERSE EMA SIGNAL DETECTED!] Trend flipped from %d to %d. Placing opposing EMA pending grid...", 
+                     m_lastExecutedTrendDir, currentTrendDir);
+         PlaceEMATrendGrid(currentTrendDir);
+         m_lastExecutedTrendDir = currentTrendDir;
+      }
    }
 }
 
 //+------------------------------------------------------------------+
 //| Check if current Broker Server time is inside Trading Window     |
-//| (05:00 AM to 17:00 PM Server Time = 08:00 AM to 20:00 PM BD Time)|
 //+------------------------------------------------------------------+
 bool IsInsideServerTradingWindow()
 {
    if(!InpUseTimeWindow) return true;
 
    MqlDateTime dt;
-   TimeCurrent(dt); // Returns Broker Server Time
+   TimeCurrent(dt);
 
    if(InpServerStartHour <= InpServerEndHour)
    {
@@ -210,9 +226,9 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops with Explicit 20 Pips ($2.00 Price) |
+//| Place Pending Grid based strictly on EMA Trend Signal            |
 //+------------------------------------------------------------------+
-void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
+void PlaceEMATrendGrid(int trendDir)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -221,57 +237,37 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   int trendDir = GetTrendDirection();
-
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
 
-   // 1 Pip on Gold = $0.10 price difference -> 20 Pips = $2.00 price difference (e.g. 2602.00 -> 2604.00)
-   double stepPriceOffset = InpGridStepPips * 0.10;
-   double reversalPriceOffset = InpReversalOffsetPips * 0.10;
+   double stepPriceOffset = InpGridStepPips * 0.10; // $2.00 per 20 Pips
 
-   double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + reversalPriceOffset);
-   double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - reversalPriceOffset, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
-
-   // Refill BuyStops with EXACT 20 Pips ($2.00 Gold Price Gap e.g. 2602 -> 2604 -> 2606)
-   if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
+   if(trendDir >= 0) // Bullish Trend Signal: Place 11 BuyStops (0.01 -> 0.11)
    {
-      int levelIndex = activeBuyStops + 1;
-      // Inverted Lot Sequence: 0.11 -> 0.01
-      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativePriceOffset = (levelIndex - 1) * stepPriceOffset; // EXACT $2.00 per level
-      double price = NormalizeDouble(buyBasePrice + cumulativePriceOffset, _Digits);
-
-      if(price > ask + stopLevel * point)
+      double basePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+      for(int i = 1; i <= InpMaxGridLevels; i++)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyRefill #%d", levelIndex));
+         double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+         double price = NormalizeDouble(basePrice + (i - 1) * stepPriceOffset, _Digits);
+         if(price > ask + stopLevel * point)
+         {
+            PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyEMASignal #%d", i));
+         }
       }
-      return; // 1 Order per tick!
    }
-
-   // Refill SellStops with EXACT 20 Pips ($2.00 Gold Price Gap e.g. 2602 -> 2600 -> 2598)
-   if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
+   else // Bearish Trend Signal: Place 11 SellStops (0.01 -> 0.11 or Inverted)
    {
-      int levelIndex = activeSellStops + 1;
-      // Inverted Lot Sequence: 0.11 -> 0.01
-      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
-      double cumulativePriceOffset = (levelIndex - 1) * stepPriceOffset; // EXACT $2.00 per level
-      double price = NormalizeDouble(sellBasePrice - cumulativePriceOffset, _Digits);
-
-      if(price < bid - stopLevel * point)
+      double basePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+      for(int i = 1; i <= InpMaxGridLevels; i++)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellRefill #%d", levelIndex));
+         double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep); // Inverted lot 0.11->0.01
+         double price = NormalizeDouble(basePrice - (i - 1) * stepPriceOffset, _Digits);
+         if(price < bid - stopLevel * point)
+         {
+            PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellEMASignal #%d", i));
+         }
       }
-      return; // 1 Order per tick!
    }
-}
-
-//+------------------------------------------------------------------+
-//| Reset State Machine Counters                                     |
-//+------------------------------------------------------------------+
-void ResetStateMachine()
-{
-   m_gridState = GRID_STATE_EMPTY;
 }
 
 //+------------------------------------------------------------------+
@@ -526,7 +522,7 @@ bool CheckEquityProtection()
                      floatingLossUSD, InpMaxAllowedDrawdownUSD);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
-         ResetStateMachine();
+         m_gridState = GRID_STATE_EMPTY;
          return true;
       }
 
@@ -536,7 +532,7 @@ bool CheckEquityProtection()
          PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
          CloseAllPositionsGuaranteed();    // CLOSE OPEN POSITIONS FIRST IN MILLISECONDS!
          DeleteAllPendingOrdersGuaranteed(); // THEN DELETE PENDINGS
-         ResetStateMachine();
+         m_gridState = GRID_STATE_EMPTY;
          return true;
       }
    }
