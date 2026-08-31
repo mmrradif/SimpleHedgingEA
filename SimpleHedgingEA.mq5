@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Bounded Pre-Zone Dual Grid EA                       |
+//| Description: Inverted Lot Grid EA (0.11 Lot at Entry Level #1)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "102.00"
-#property description "Bounded Pre-Zone Dual Grid EA: 11 BuyStops set leading UP TO M1 High Boundary & 11 SellStops set leading DOWN TO M1 Low Boundary (Target $5.00, Max Loss $500.00)"
+#property version   "103.00"
+#property description "Inverted Lot Dual Grid EA: Placed 0.11 Lot at starting Entry Level #1 down to 0.01 Lot at Level #11 (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,10 +23,10 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
-input group "=== Pre-Zone Grid Settings ==="
+input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
-input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
-input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
+input double   InpStartLot            = 0.01;     // Minimum Lot Step Unit (0.01)
+input double   InpLotStep             = 0.01;     // Lot Decrement Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
 
 input group "=== Profit & Loss Settings ==="
@@ -75,8 +75,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Bounded Pre-Zone Grid EA v102.0 Initialized. M1 Lookback: %d candles, Target: $%.2f, Max Loss: $%.2f", 
-               InpZoneLookback, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Inverted Lot Grid EA v103.0 Initialized (0.11 Lot at Entry Level #1). Target: $%.2f, Max Loss: $%.2f", 
+               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -350,12 +350,12 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Bounded Pre-Zone Grid (Grid ends AT the M1 Zone Boundary)  |
+//| Setup Inverted Lot Grid (0.11 Lot at Entry Level #1)             |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
    double m1High = 0, m1Low = 0;
-   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // M1 Timeframe 30 candles High/Low
+   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low);
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -364,21 +364,17 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Buy Zone Boundary Ends at m1High:
-   // Buy #11 is placed at m1High, Buy #1 to #10 stepped leading up to m1High
-   double buyEndPrice = m1High;
-   // Sell Zone Boundary Ends at m1Low:
-   // Sell #11 is placed at m1Low, Sell #1 to #10 stepped leading down to m1Low
-   double sellEndPrice = m1Low;
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Place 1 Buy Stop per tick leading up to M1 High (0.01 to 0.11 Lot)
+   // Place 1 Buy Stop per tick with INVERTED LOTS (0.11 Lot at Entry Level #1 down to 0.01 Lot at Level #11)
    if(m_buyGridPlacedCount < 11)
    {
       int i = m_buyGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      // Buy #11 ends at m1High; Buy #1 starts at m1High - (10 * step)
-      double offsetFromEnd = (11 - i) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(buyEndPrice - offsetFromEnd, _Digits);
+      // Inverted lot calculation: Order #1 gets 0.11 lot, Order #11 gets 0.01 lot
+      double lot = NormalizeLot(InpStartLot + (11 - i) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
       if(price > ask + stopLevel * point)
       {
@@ -394,14 +390,14 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place 1 Sell Stop per tick leading down to M1 Low (0.01 to 0.11 Lot)
+   // Place 1 Sell Stop per tick with INVERTED LOTS (0.11 Lot at Entry Level #1 down to 0.01 Lot at Level #11)
    if(m_sellGridPlacedCount < 11)
    {
       int i = m_sellGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      // Sell #11 ends at m1Low; Sell #1 starts at m1Low + (10 * step)
-      double offsetFromEnd = (11 - i) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(sellEndPrice + offsetFromEnd, _Digits);
+      // Inverted lot calculation: Order #1 gets 0.11 lot, Order #11 gets 0.01 lot
+      double lot = NormalizeLot(InpStartLot + (11 - i) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
       if(price < bid - stopLevel * point)
       {
