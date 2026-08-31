@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Single Active Direction Grid EA (Zero Hanging Trades)|
+//| Description: Dynamic Proportional Exit EA (Prevents Single Trade Hang)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "108.00"
-#property description "Single Direction Grid EA: Deletes opposing pendings as soon as one side triggers to guarantee ZERO hanging trades in Real Ticks (Target $5.00, Max Loss $500.00)"
+#property version   "109.00"
+#property description "Dynamic Proportional Profit Exit EA: Scales target profit per active lot (0.01 lot closes at $0.50 profit) preventing single trades from hanging"
 
 #include <Trade\Trade.mqh>
 
@@ -30,9 +30,8 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
 
 input group "=== Profit & Loss Settings ==="
-input double   InpTargetProfitUSD     = 5.00;     // Target Net Profit ($5.00 Close All)
-input double   InpBuySideTargetUSD    = 5.00;     // Buy Side Profit Target ($5.00 Close Buys Only)
-input double   InpSellSideTargetUSD   = 5.00;     // Sell Side Profit Target ($5.00 Close Sells Only)
+input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
+input double   InpProfitPerLotUSD     = 50.0;     // Proportional Target Profit Per Lot ($50 per 1.0 lot = $0.50 per 0.01 lot)
 input double   InpMaxSideLossUSD      = 500.0;    // Per-Side Max Loss Cap ($500.00 Force Close Side)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
@@ -76,8 +75,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Single Direction Grid EA v108.0 Initialized (Zero Hanging Trades). Target: $%.2f, Max Loss: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Dynamic Proportional Profit EA v109.0 Initialized. Max Loss: $%.2f", 
+               InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -118,12 +117,7 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // ------------------------------------------------------------------
-   // 4. CORE FIX FOR HANGING TRADES (SINGLE DIRECTION ISOLATION):
-   //    As soon as BUY position opens, IMMEDIATELY delete all SellStops!
-   //    As soon as SELL position opens, IMMEDIATELY delete all BuyStops!
-   //    This guarantees Buy and Sell NEVER hedge each other!
-   // ------------------------------------------------------------------
+   // 4. Single Direction Isolation (Delete opposing pendings when position opens)
    if(buyCount > 0 && sellStopCount > 0)
    {
       DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
@@ -135,7 +129,7 @@ void OnTick()
       return;
    }
 
-   // 5. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time, close ONLY if side profit > $0.00)
+   // 5. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time)
    if(InpEODProfitOnlyClose && IsEODCloseTime())
    {
       if(buyCount > 0 && buyProfitUSD > 0.0)
@@ -160,7 +154,6 @@ void OnTick()
    // 6. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
    if(InpUseTimeWindow && !IsWithinBDTradingHours())
    {
-      // Outside BD trading hours: if no open positions exist, clean up pendings and pause!
       if(totalOpenPositions == 0 && totalPendingOrders > 0)
       {
          DeleteOnePendingOrderPaced();
@@ -216,53 +209,56 @@ void OnTick()
       }
    }
 
-   // 9. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
-   if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
+   // ------------------------------------------------------------------
+   // 9. DYNAMIC PROPORTIONAL PROFIT TARGET EXITS:
+   //    Prevents single small trades (0.01, 0.06 lot) from hanging!
+   //    Target scales with open lot size: 0.01 lot targets $0.50 profit!
+   // ------------------------------------------------------------------
+   if(buyCount > 0)
    {
-      PrintFormat(">>> [TOTAL BASKET PROFIT EXIT!] Net Profit $%.2f >= $%.2f. Closing all positions IN PROFIT...", totalProfitUSD, InpTargetProfitUSD);
-      CloseAllPositionsGuaranteed();
-      DeleteAllPendingOrdersGuaranteed();
-      ResetStateMachine();
-      return;
+      double dynamicBuyTarget = MathMin(InpTargetProfitUSD, MathMax(0.50, totalBuyLot * InpProfitPerLotUSD));
+      if(buyProfitUSD >= dynamicBuyTarget)
+      {
+         PrintFormat(">>> [DYNAMIC BUY PROFIT EXIT!] Buy Profit $%.2f >= Target $%.2f (Lot: %.2f). Closing Buy side IN PROFIT...", 
+                     buyProfitUSD, dynamicBuyTarget, totalBuyLot);
+         ClosePositionsByType(POSITION_TYPE_BUY);
+         DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
+         m_buySideClosed = true;
+         m_buyGridPlacedCount = 0;
+         m_gridState = (sellCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_BUY;
+         return;
+      }
    }
 
-   // 10. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
-   if(buyCount > 0 && buyProfitUSD >= InpBuySideTargetUSD)
+   if(sellCount > 0)
    {
-      PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side IN PROFIT...", buyProfitUSD, InpBuySideTargetUSD);
-      ClosePositionsByType(POSITION_TYPE_BUY);
-      DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
-      m_buySideClosed = true;
-      m_buyGridPlacedCount = 0;
-      m_gridState = (sellCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_BUY;
-      return;
+      double dynamicSellTarget = MathMin(InpTargetProfitUSD, MathMax(0.50, totalSellLot * InpProfitPerLotUSD));
+      if(sellProfitUSD >= dynamicSellTarget)
+      {
+         PrintFormat(">>> [DYNAMIC SELL PROFIT EXIT!] Sell Profit $%.2f >= Target $%.2f (Lot: %.2f). Closing Sell side IN PROFIT...", 
+                     sellProfitUSD, dynamicSellTarget, totalSellLot);
+         ClosePositionsByType(POSITION_TYPE_SELL);
+         DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
+         m_sellSideClosed = true;
+         m_sellGridPlacedCount = 0;
+         m_gridState = (buyCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_SELL;
+         return;
+      }
    }
 
-   // 11. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
-   if(sellCount > 0 && sellProfitUSD >= InpSellSideTargetUSD)
-   {
-      PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side IN PROFIT...", sellProfitUSD, InpSellSideTargetUSD);
-      ClosePositionsByType(POSITION_TYPE_SELL);
-      DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
-      m_sellSideClosed = true;
-      m_sellGridPlacedCount = 0;
-      m_gridState = (buyCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_SELL;
-      return;
-   }
-
-   // 12. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
+   // 10. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
    if(m_buySideClosed && m_sellSideClosed && totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       ResetStateMachine();
    }
 
-   // 13. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours & Normal Spread)
+   // 11. STATE: EMPTY STATE -> START PLACEMENT
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
       if(InpMaxSpreadPoints > 0 && currentSpread > InpMaxSpreadPoints)
       {
-         return; // Skip grid placement during spread spikes in Real Ticks mode!
+         return;
       }
 
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -271,7 +267,7 @@ void OnTick()
       }
    }
 
-   // 14. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS (1 Order Per Tick)
+   // 12. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
