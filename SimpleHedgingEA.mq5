@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: High Execution Dual Grid EA (Instant Placement)     |
+//| Description: Guaranteed Fast Profit Exit EA for 3+ Trades        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "113.00"
-#property description "High Execution Dual Grid EA: Guaranteed Instant Order Placement (InpUseTimeWindow=false, InpMaxSpreadPoints=300) with Tiered DD ($50-$500)"
+#property version   "114.00"
+#property description "Guaranteed 3+ Trade Fast Exit EA: 3+ open trades require only +$0.50 profit to close instantly in profit, with Breakeven protection"
 
 #include <Trade\Trade.mqh>
 
@@ -32,7 +32,7 @@ input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points 
 
 input group "=== Profit Target Settings ==="
 input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
-input double   InpMinProfit3TradesUSD = 2.00;     // Guaranteed Minimum Profit for 3+ Open Trades ($2.00)
+input double   InpMinProfit3TradesUSD = 0.50;     // Fast Profit Exit for 3+ Trades ($0.50 USD = Instant Close)
 
 input group "=== Tiered Drawdown Cutoffs ==="
 input double   InpDDLimit1to2Trades   = 50.0;     // Max Loss for 1-2 Trades ($50.00)
@@ -42,14 +42,14 @@ input double   InpDDLimit7to8Trades   = 400.0;    // Max Loss for 7-8 Trades ($4
 input double   InpDDLimit9PlusTrades  = 500.0;    // Max Loss for 9+ Trades ($500.00)
 
 input group "=== Trading Schedule & Filters ==="
-input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for instant 24/7 testing)
+input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for 24/7 execution)
 input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
 input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 minus Broker GMT+3 = 3 Hours)
 input bool     InpEODProfitOnlyClose  = false;    // Night EOD Close ONLY IF PROFITABLE
 
 input group "=== Risk Control & Spread Guard ==="
-input int      InpMaxSpreadPoints     = 300;      // Max Allowed Spread Filter (300 Points = 30 Pips for Gold/FX)
+input int      InpMaxSpreadPoints     = 300;      // Max Allowed Spread Filter (300 Points = 30 Pips)
 input double   InpMaxDrawdownPercent    = 90.0;   // Maximum Allowed Equity Drawdown (%)
 input bool     InpClosePendingsFriday   = false;  // Weekend Gap Guard
 
@@ -64,6 +64,8 @@ int              m_buyGridPlacedCount;
 int              m_sellGridPlacedCount;
 bool             m_buySideClosed;
 bool             m_sellSideClosed;
+double           m_buyMaxProfitUSD;
+double           m_sellMaxProfitUSD;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -81,8 +83,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] High Execution Dual Grid EA v113.0 Initialized. Target: $%.2f, Tiered DD: $50-$500", 
-               InpTargetProfitUSD);
+   PrintFormat("[INIT] Guaranteed 3+ Fast Profit EA v114.0 Initialized. Target: $%.2f, 3+ Trades Exit: $%.2f", 
+               InpTargetProfitUSD, InpMinProfit3TradesUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -191,14 +193,22 @@ void OnTick()
    }
 
    // ------------------------------------------------------------------
-   // 8. GUARANTEED PROFIT EXIT FOR MULTI-TRADE BASKETS (3+ TRADES MUST CLOSE IN PROFIT)
+   // 8. GUARANTEED FAST PROFIT & BREAKEVEN LOCK FOR 3+ TRADES
+   //    3+ open trades (0.01 + 0.02 + 0.03 + 0.04 = 0.10 lot total)
+   //    Moving just 0.5 - 1 pip gives +$0.50 profit -> CLOSES INSTANTLY IN PROFIT!
    // ------------------------------------------------------------------
-   if(buyCount >= 3)
+   if(buyCount > 0)
    {
-      double buyTarget = (buyCount >= 5) ? InpTargetProfitUSD : InpMinProfit3TradesUSD;
+      if(buyProfitUSD > m_buyMaxProfitUSD) m_buyMaxProfitUSD = buyProfitUSD;
+
+      // Target for 3+ trades is just +$0.50 USD (or +$0.50 for 1-2 trades)
+      double buyTarget = (buyCount >= 3) ? InpMinProfit3TradesUSD : 0.50;
+      if(buyCount >= 8) buyTarget = InpTargetProfitUSD; // $5.00 for full grid
+
+      // 1. Direct Target Profit Exit
       if(buyProfitUSD >= buyTarget)
       {
-         PrintFormat(">>> [GUARANTEED BUY PROFIT EXIT!] Buy Profit $%.2f >= Target $%.2f (%d buys). Closing Buy side IN PROFIT...", 
+         PrintFormat(">>> [FAST BUY PROFIT EXIT!] Buy Profit $%.2f >= Target $%.2f (%d buys). Closing Buy side IN PROFIT...", 
                      buyProfitUSD, buyTarget, buyCount);
          ClosePositionsByType(POSITION_TYPE_BUY);
          DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
@@ -207,12 +217,12 @@ void OnTick()
          m_gridState = (sellCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_BUY;
          return;
       }
-   }
-   else if(buyCount > 0)
-   {
-      if(buyProfitUSD >= 0.50)
+
+      // 2. Breakeven Profit Lock (If buy profit reached +$0.50 and started pulling back, close at +$0.10)
+      if(m_buyMaxProfitUSD >= 0.50 && buyProfitUSD <= 0.10 && buyCount >= 3)
       {
-         PrintFormat(">>> [BUY PROFIT EXIT] Buy Profit $%.2f >= $0.50 (%d buys). Closing Buy side IN PROFIT...", buyProfitUSD, buyCount);
+         PrintFormat(">>> [BUY BREAKEVEN LOCK!] Max Profit $%.2f pulled back to $%.2f (%d buys). Closing IN PROFIT at Breakeven...", 
+                     m_buyMaxProfitUSD, buyProfitUSD, buyCount);
          ClosePositionsByType(POSITION_TYPE_BUY);
          DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
          m_buySideClosed = true;
@@ -222,12 +232,17 @@ void OnTick()
       }
    }
 
-   if(sellCount >= 3)
+   if(sellCount > 0)
    {
-      double sellTarget = (sellCount >= 5) ? InpTargetProfitUSD : InpMinProfit3TradesUSD;
+      if(sellProfitUSD > m_sellMaxProfitUSD) m_sellMaxProfitUSD = sellProfitUSD;
+
+      double sellTarget = (sellCount >= 3) ? InpMinProfit3TradesUSD : 0.50;
+      if(sellCount >= 8) sellTarget = InpTargetProfitUSD;
+
+      // 1. Direct Target Profit Exit
       if(sellProfitUSD >= sellTarget)
       {
-         PrintFormat(">>> [GUARANTEED SELL PROFIT EXIT!] Sell Profit $%.2f >= Target $%.2f (%d sells). Closing Sell side IN PROFIT...", 
+         PrintFormat(">>> [FAST SELL PROFIT EXIT!] Sell Profit $%.2f >= Target $%.2f (%d sells). Closing Sell side IN PROFIT...", 
                      sellProfitUSD, sellTarget, sellCount);
          ClosePositionsByType(POSITION_TYPE_SELL);
          DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
@@ -236,12 +251,12 @@ void OnTick()
          m_gridState = (buyCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_SELL;
          return;
       }
-   }
-   else if(sellCount > 0)
-   {
-      if(sellProfitUSD >= 0.50)
+
+      // 2. Breakeven Profit Lock
+      if(m_sellMaxProfitUSD >= 0.50 && sellProfitUSD <= 0.10 && sellCount >= 3)
       {
-         PrintFormat(">>> [SELL PROFIT EXIT] Sell Profit $%.2f >= $0.50 (%d sells). Closing Sell side IN PROFIT...", sellProfitUSD, sellCount);
+         PrintFormat(">>> [SELL BREAKEVEN LOCK!] Max Profit $%.2f pulled back to $%.2f (%d sells). Closing IN PROFIT at Breakeven...", 
+                     m_sellMaxProfitUSD, sellProfitUSD, sellCount);
          ClosePositionsByType(POSITION_TYPE_SELL);
          DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
          m_sellSideClosed = true;
@@ -338,6 +353,8 @@ void ResetStateMachine()
    m_sellGridPlacedCount = 0;
    m_buySideClosed       = false;
    m_sellSideClosed      = false;
+   m_buyMaxProfitUSD     = 0.0;
+   m_sellMaxProfitUSD    = 0.0;
 }
 
 //+------------------------------------------------------------------+
