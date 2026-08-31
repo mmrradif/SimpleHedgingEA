@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 11-Level Dual-Hedging Counter Recovery Grid EA      |
+//| Description: Interleaved Mirrored Counter-Hedging Grid EA        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "52.00"
-#property description "11-Level Dual-Hedging Counter Recovery Grid EA (0.01 to 0.11 Lot, $2.00 Net Basket Target Exit)"
+#property version   "53.00"
+#property description "Interleaved Mirrored Counter-Hedging Grid EA (Paired Buy/Sell Stops at Every Level to Prevent Fakeout Losses)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,11 +15,11 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Orders (0.01 -> 0.11)
-input int      InpBaseGridStepPoints  = 200;      // Base Distance Between Levels (200 Points = 20 Pips)
+input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - 11 Levels (0.01 -> 0.11)
+input int      InpBaseGridStepPoints  = 200;      // Distance Between Main Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
+input int      InpCounterHedgeGapPts  = 50;       // Gap for Counter-Hedge Pendings (50 Points = 5 Pips)
 input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All Buy + Sell)
-input bool     InpCancelOppositeStops = false;    // Keep Opposite Pendings Active for Hedging Recovery
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
@@ -46,7 +46,7 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] 11-Level Hedging Recovery EA v52.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Mirrored Hedging EA v53.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -89,7 +89,7 @@ void OnTick()
       return;
    }
 
-   // 4. SETUP DUAL 11-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 4. SETUP INTERLEAVED MIRRORED PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -139,7 +139,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Dual 11-Level Pending Grid (0.01 -> 0.11 Lot Buy & Sell)   |
+//| Setup Interleaved Mirrored Pending Grid (11 Pairs Buy/Sell Stops)|
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -157,7 +157,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11; // Exactly 11 Orders: 0.01, 0.02, 0.03 ... 0.11
+   int stepCount = 11; // 11 Levels (0.01 to 0.11 Lot)
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -165,28 +165,33 @@ void SetupProgressivePendingGrid()
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
+   double hedgeGap = InpCounterHedgeGapPts * point;
 
-   // 1. Place 11 BUY STOP Orders (0.01 to 0.11)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-      double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop Recovery 0.01-0.11");
+      // --- Upper Level Pair (Buy Stop Main + Paired Sell Stop Counter Hedge) ---
+      double buyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
+      double pairedSellPrice = NormalizeDouble(buyPrice - hedgeGap, _Digits);
+
+      if(buyPrice > ask + stopLevel * point)
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, buyPrice, StringFormat("BuyStop #%d", i));
+
+      if(pairedSellPrice < bid - stopLevel * point)
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, pairedSellPrice, StringFormat("HedgeSell #%d", i));
+
+      // --- Lower Level Pair (Sell Stop Main + Paired Buy Stop Counter Hedge) ---
+      double sellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
+      double pairedBuyPrice = NormalizeDouble(sellPrice + hedgeGap, _Digits);
+
+      if(sellPrice < bid - stopLevel * point)
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, sellPrice, StringFormat("SellStop #%d", i));
+
+      if(pairedBuyPrice > ask + stopLevel * point)
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, pairedBuyPrice, StringFormat("HedgeBuy #%d", i));
+
       cumulativeBuyOffset += currentStepDistance;
-      currentStepDistance *= InpSpacingMultiplier;
-   }
-
-   // Reset step distance for Sell grid
-   currentStepDistance = InpBaseGridStepPoints * point;
-
-   // 2. Place 11 SELL STOP Orders (0.01 to 0.11)
-   for(int i = 1; i <= stepCount; i++)
-   {
-      double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-      double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
-
-      PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop Recovery 0.01-0.11");
       cumulativeSellOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
