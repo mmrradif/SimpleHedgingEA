@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: EMA 20-Pip Offset Reversal Pending Dual Grid EA     |
+//| Description: Dynamic Profit Scaling & Zero-Hanging Guard EA     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "126.00"
-#property description "EMA 20-Pip Offset Reversal Pending Dual Grid EA: Uses 9/21 EMA trend direction and sets 20-pip offset reversal pending orders for peak protection ($5 Target, $5000 Max DD)"
+#property version   "127.00"
+#property description "Zero-Hanging EA: Uses Proportional Dynamic Profit Scaling ($0.50 per 0.01 Lot) so single trades close fast in 5 pips ($0.50) without hanging ($5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,6 +23,11 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
+input group "=== Dynamic Profit Target Settings ==="
+input double   InpProfitPerMicroLot   = 0.50;     // Profit Target per 0.01 Lot ($0.50 USD = 5 Pips Fast Exit)
+input double   InpMinBasketTargetUSD  = 0.50;     // Minimum Target Profit for Single 0.01 Trade ($0.50)
+input double   InpMaxBasketTargetUSD  = 5.00;     // Maximum Cap Target Profit ($5.00)
+
 input group "=== Trend & Direction Filter ==="
 input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Direction Bias
 input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
@@ -35,11 +40,6 @@ input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
 input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
-
-input group "=== Profit Target Settings ==="
-input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
-input double   InpBuySideTargetUSD    = 5.00;     // Buy Side Target Profit ($5.00)
-input double   InpSellSideTargetUSD   = 5.00;     // Sell Side Target Profit ($5.00)
 
 input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
@@ -87,8 +87,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] EMA 20-Pip Offset Dual Grid EA v126.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Zero-Hanging EA v127.0 Initialized. Dynamic Target: $%.2f per 0.01 Lot, Max DD: $%.2f", 
+               InpProfitPerMicroLot, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -121,21 +121,32 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
-   if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
+   // 3. DYNAMIC PROPORTIONAL PROFIT SCALING ($0.50 PER 0.01 LOT)
+   double totalLot = totalBuyLot + totalSellLot;
+   double dynamicTargetUSD = InpMinBasketTargetUSD;
+   if(totalLot > 0)
    {
-      PrintFormat(">>> [TOTAL BASKET PROFIT EXIT!] Net Profit $%.2f >= Target $%.2f. Closing all positions IN PROFIT...", 
-                  totalProfitUSD, InpTargetProfitUSD);
+      dynamicTargetUSD = NormalizeDouble((totalLot / 0.01) * InpProfitPerMicroLot, 2);
+      if(dynamicTargetUSD < InpMinBasketTargetUSD) dynamicTargetUSD = InpMinBasketTargetUSD;
+      if(dynamicTargetUSD > InpMaxBasketTargetUSD) dynamicTargetUSD = InpMaxBasketTargetUSD;
+   }
+
+   // 4. TOTAL BASKET PROFIT EXIT (DYNAMIC TARGET)
+   if(totalOpenPositions > 0 && totalProfitUSD >= dynamicTargetUSD)
+   {
+      PrintFormat(">>> [FAST BASKET PROFIT EXIT!] Net Profit $%.2f >= Dynamic Target $%.2f (Lot: %.2f). Closing positions...", 
+                  totalProfitUSD, dynamicTargetUSD, totalLot);
       CloseAllPositionsGuaranteed();
       DeleteAllPendingOrdersGuaranteed();
       ResetStateMachine();
       return;
    }
 
-   // 4. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
-   if(buyCount > 0 && buyProfitUSD >= InpBuySideTargetUSD)
+   // 5. INDEPENDENT BUY-SIDE PROFIT EXIT
+   double buyTargetUSD = MathMax(InpMinBasketTargetUSD, (totalBuyLot / 0.01) * InpProfitPerMicroLot);
+   if(buyCount > 0 && buyProfitUSD >= buyTargetUSD)
    {
-      PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side IN PROFIT...", buyProfitUSD, InpBuySideTargetUSD);
+      PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side...", buyProfitUSD, buyTargetUSD);
       ClosePositionsByType(POSITION_TYPE_BUY);
       DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
       m_buySideClosed = true;
@@ -144,10 +155,11 @@ void OnTick()
       return;
    }
 
-   // 5. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
-   if(sellCount > 0 && sellProfitUSD >= InpSellSideTargetUSD)
+   // 6. INDEPENDENT SELL-SIDE PROFIT EXIT
+   double sellTargetUSD = MathMax(InpMinBasketTargetUSD, (totalSellLot / 0.01) * InpProfitPerMicroLot);
+   if(sellCount > 0 && sellProfitUSD >= sellTargetUSD)
    {
-      PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side IN PROFIT...", sellProfitUSD, InpSellSideTargetUSD);
+      PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side...", sellProfitUSD, sellTargetUSD);
       ClosePositionsByType(POSITION_TYPE_SELL);
       DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
       m_sellSideClosed = true;
@@ -156,13 +168,13 @@ void OnTick()
       return;
    }
 
-   // 6. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
+   // 7. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
    if(m_buySideClosed && m_sellSideClosed && totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       ResetStateMachine();
    }
 
-   // 7. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
+   // 8. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -171,7 +183,7 @@ void OnTick()
       }
    }
 
-   // 8. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
+   // 9. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < InpMaxGridLevels || m_sellGridPlacedCount < InpMaxGridLevels)
@@ -210,8 +222,6 @@ int GetTrendDirection()
 
 //+------------------------------------------------------------------+
 //| Setup EMA-Guided 20-Pip Offset Reversal Dual Grid               |
-//| Bullish (9 EMA > 21 EMA): BuyStops at M1 High, SellStops 20 pips below |
-//| Bearish (9 EMA < 21 EMA): SellStops at M1 Low, BuyStops 20 pips above |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -229,12 +239,12 @@ void SetupPacedInitialDualGrid()
 
    double buyBasePrice = 0, sellBasePrice = 0;
 
-   if(trendDir >= 0) // Bullish or Neutral Trend: Primary BuyStops at M1 High, Reversal SellStops EXACTLY 20 PIPS BELOW
+   if(trendDir >= 0) // Bullish or Neutral Trend: Primary BuyStops at M1 High, Reversal SellStops 20 Pips Below
    {
       buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
       sellBasePrice = MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point);
    }
-   else // Bearish Trend: Primary SellStops at M1 Low, Reversal BuyStops EXACTLY 20 PIPS ABOVE
+   else // Bearish Trend: Primary SellStops at M1 Low, Reversal BuyStops 20 Pips Above
    {
       sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
       buyBasePrice = MathMax(sellBasePrice + InpReversalOffsetPoints * point, ask + (stopLevel + 15) * point);
