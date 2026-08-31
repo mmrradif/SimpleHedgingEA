@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Fixed 44-Order Quad-Zone Hedging Grid EA ($5 Target)|
+//| Description: Clean Anti-Spam Dual Grid EA (Zero MT5 Stop Errors) |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "63.00"
-#property description "Fixed 44-Order Quad-Zone Hedging Grid EA ($5.00 Target Net Profit Exit)"
+#property version   "64.00"
+#property description "Clean Anti-Spam Dual Grid EA (20 Orders Max per Initialization - Zero MT5 Tester Block Errors)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,10 +15,9 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Orders per Zone
+input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Orders per Direction
 input int      InpBaseGridStepPoints  = 200;      // Grid Distance Between Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpCounterOffsetPoints = 500;      // Counter Hedge Offset (500 Points = 50 Pips)
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Break-Even Shield & Protection ==="
@@ -53,7 +52,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] 44-Order Grid EA v63.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Clean Anti-Spam Grid EA v64.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -123,7 +122,7 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP FIXED 44-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP CLEAN ANTI-SPAM PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -173,9 +172,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Fixed 44-Order Quad-Zone Grid                              |
-//| (1. Buy Zone: 11 BuyStops | 2. 50 pips below: 11 Counter SellStops|
-//|  3. Sell Zone: 11 SellStops | 4. 50 pips above: 11 Counter BuyStops)|
+//| Setup Clean Anti-Spam Dual Grid (10 BuyStops & 10 SellStops)      |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -193,12 +190,10 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11; // 11 Levels per Zone
+   int stepCount = 10; // Exactly 10 Orders per direction (20 total)
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
-
-   double offset50Pips = InpCounterOffsetPoints * point; // 500 points = 50 pips
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -208,32 +203,18 @@ void SetupProgressivePendingGrid()
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
 
-      // --- 1. Main Buy Stop Zone (Going Up: 0.01 -> 0.11) ---
+      // --- Buy Stop Grid (Going Up: 0.01 -> 0.10) ---
       double mainBuyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
       if(mainBuyPrice > ask + stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyZone #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyStop #%d", i));
       }
 
-      // --- 2. Counter Sell Stop Zone (50 Pips BELOW Buy Zone: 0.01 -> 0.11) ---
-      double counterSellPrice = NormalizeDouble((buyBasePrice - offset50Pips) - cumulativeBuyOffset, _Digits);
-      if(counterSellPrice < bid - stopLevel * point && counterSellPrice > 0)
-      {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, counterSellPrice, StringFormat("CounterSell #%d", i));
-      }
-
-      // --- 3. Main Sell Stop Zone (Going Down: 0.01 -> 0.11) ---
+      // --- Sell Stop Grid (Going Down: 0.01 -> 0.10) ---
       double mainSellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
       if(mainSellPrice < bid - stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellZone #%d", i));
-      }
-
-      // --- 4. Counter Buy Stop Zone (50 Pips ABOVE Sell Zone: 0.01 -> 0.11) ---
-      double counterBuyPrice = NormalizeDouble((sellBasePrice + offset50Pips) + cumulativeSellOffset, _Digits);
-      if(counterBuyPrice > ask + stopLevel * point)
-      {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, counterBuyPrice, StringFormat("CounterBuy #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellStop #%d", i));
       }
 
       cumulativeBuyOffset += currentStepDistance;
