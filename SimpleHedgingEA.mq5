@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Original Best Profitable Grid EA (0.01-0.10 Lot)    |
+//| Description: 11-Level Dual-Hedging Counter Recovery Grid EA      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "51.00"
-#property description "Original Best Profitable Pending Grid EA (0.01-0.10 Lot, $2.00 Target, Instant $500 Cutoff)"
+#property version   "52.00"
+#property description "11-Level Dual-Hedging Counter Recovery Grid EA (0.01 to 0.11 Lot, $2.00 Net Basket Target Exit)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,13 +15,13 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
+input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Orders (0.01 -> 0.11)
 input int      InpBaseGridStepPoints  = 200;      // Base Distance Between Levels (200 Points = 20 Pips)
-input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Original 1.20)
-input double   InpTargetProfitUSD     = 2.00;     // Target Net Profit per Basket ($2.00 Close All)
+input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
+input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All Buy + Sell)
+input bool     InpCancelOppositeStops = false;    // Keep Opposite Pendings Active for Hedging Recovery
 
-input group "=== Risk Control & Direction Lock ==="
-input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
+input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
 
@@ -46,7 +46,7 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] Original Best Grid EA v51.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 11-Level Hedging Recovery EA v52.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -77,23 +77,10 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. STRICT SINGLE-DIRECTION LOCK (Prevents Real-Tick Double Traps)
-   if(totalOpenPositions > 0)
-   {
-      if(buyCount > 0 && (sellStopCount > 0 || sellCount > 0))
-      {
-         DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
-      }
-      if(sellCount > 0 && (buyStopCount > 0 || buyCount > 0))
-      {
-         DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
-      }
-   }
-
-   // 4. GUARANTEED BASKET PROFIT EXIT ($2.00 TARGET)
+   // 3. GUARANTEED NET BASKET PROFIT EXIT (ALL BUY + SELL POSITIONS & PENDINGS)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
-      PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing positions...", 
+      PrintFormat(">>> [NET BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       DeleteAllPendingOrdersGuaranteed();
@@ -102,7 +89,7 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP 10-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 4. SETUP DUAL 11-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -152,7 +139,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Progressive Spacing Pending Grid (10 Orders: 0.01 -> 0.10) |
+//| Setup Dual 11-Level Pending Grid (0.01 -> 0.11 Lot Buy & Sell)   |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -170,7 +157,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 10;
+   int stepCount = 11; // Exactly 11 Orders: 0.01, 0.02, 0.03 ... 0.11
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -179,13 +166,13 @@ void SetupProgressivePendingGrid()
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 1. Place 10 BUY STOP Orders (0.01 to 0.10)
+   // 1. Place 11 BUY STOP Orders (0.01 to 0.11)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop 0.01-0.10");
+      PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop Recovery 0.01-0.11");
       cumulativeBuyOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
@@ -193,13 +180,13 @@ void SetupProgressivePendingGrid()
    // Reset step distance for Sell grid
    currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 2. Place 10 SELL STOP Orders (0.01 to 0.10)
+   // 2. Place 11 SELL STOP Orders (0.01 to 0.11)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-      PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop 0.01-0.10");
+      PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop Recovery 0.01-0.11");
       cumulativeSellOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
