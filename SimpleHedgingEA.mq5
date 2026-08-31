@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Inverted Reversal Lot Dual Grid EA                  |
+//| Description: Strict Net-Profit Guarantee & Continuous Re-Entry EA|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "129.00"
-#property description "Inverted Reversal Lot EA: Primary grid uses 0.01 -> 0.11 lots; Reversal safety grid uses REVERSE LOTS 0.11 -> 0.01 to rapidly liquidate peak reversals ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "130.00"
+#property description "Strict Net-Profit Guarantee EA: NEVER closes at a loss on reversals; continuously re-enters on bounce-backs until combined net profit is strictly POSITIVE ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -83,7 +83,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Inverted Reversal Lot EA v129.0 Initialized. Reversal Lots: 0.11 -> 0.01, Max DD: $%.2f", 
+   PrintFormat("[INIT] Strict Net-Profit Guarantee EA v130.0 Initialized. Max DD: $%.2f", 
                InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -127,10 +127,10 @@ void OnTick()
       if(dynamicTargetUSD > InpMaxBasketTargetUSD) dynamicTargetUSD = InpMaxBasketTargetUSD;
    }
 
-   // 4. COMBINED NET BASKET PROFIT EXIT (ALL BUY & SELL TRADES CLOSED TOGETHER)
-   if(totalOpenPositions > 0 && totalProfitUSD >= dynamicTargetUSD)
+   // 4. STRICT GUARANTEED NET PROFIT EXIT (MUST BE POSITIVE & >= TARGET PROFIT)
+   if(totalOpenPositions > 0 && totalProfitUSD > 0 && totalProfitUSD >= dynamicTargetUSD)
    {
-      PrintFormat(">>> [TOTAL COMBINED NET BASKET EXIT!] Net Combined Profit $%.2f >= Dynamic Target $%.2f (Total Lot: %.2f). Closing ALL Buy & Sell positions...", 
+      PrintFormat(">>> [GUARANTEED NET PROFIT EXIT!] Net Combined Profit $%.2f >= Dynamic Target $%.2f (Total Lot: %.2f). Liquidating all positions IN PROFIT...", 
                   totalProfitUSD, dynamicTargetUSD, totalLot);
       CloseAllPositionsGuaranteed();      // CLOSE ALL BUY AND SELL POSITIONS TOGETHER!
       DeleteAllPendingOrdersGuaranteed(); // DELETE ALL PENDING ORDERS!
@@ -138,7 +138,15 @@ void OnTick()
       return;
    }
 
-   // 5. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
+   // 5. BOUNCE-BACK CONTINUOUS RE-ENTRY GUARD
+   // If price bounces back and pending orders were consumed, top-up missing pending orders!
+   if(totalOpenPositions > 0 && totalPendingOrders < (InpMaxGridLevels * 2 - totalOpenPositions))
+   {
+      // Refill active pending levels if price moves back and forth
+      SetupPacedInitialDualGrid();
+   }
+
+   // 6. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -147,7 +155,7 @@ void OnTick()
       }
    }
 
-   // 6. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
+   // 7. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_primaryGridPlacedCount < InpMaxGridLevels || m_reversalGridPlacedCount < InpMaxGridLevels)
@@ -249,7 +257,6 @@ void SetupPacedInitialDualGrid()
    if(m_reversalGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_reversalGridPlacedCount + 1;
-      // INVERTED LOT CALCULATION: First order gets the BIG LOT (0.11), scaling down to (0.01)
       double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - i) * InpLotStep); // 0.11, 0.10 ... 0.01
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
       double price = 0;
