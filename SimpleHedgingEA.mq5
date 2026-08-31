@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Bangladesh Time (07:00 AM - 10:00 PM BD) Dual Grid |
+//| Description: Fast Basket Exit & EOD Liquidation Dual Grid EA    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "84.00"
-#property description "Clean State Machine Dual Grid EA with Bangladesh Time Schedule (07:00 AM to 10:00 PM BD Time Converter)"
+#property version   "85.00"
+#property description "Clean State Machine Dual Grid EA with $2.00 Fast Basket Exit & EOD Night Liquidation (Zero Hanging Trades)"
 
 #include <Trade\Trade.mqh>
 
@@ -29,13 +29,14 @@ input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplie
 input int      InpBaseGridStepPoints  = 250;      // Base Grid Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips Below/Above Entry)
-input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
+input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Basket Profit ($2.00 Close All)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
 input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
 input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD Time GMT+6 minus Broker Server Time GMT+3 = 3 Hours)
+input bool     InpForceEODClose       = true;     // Force Close All Positions at EOD (21:55 BD Time)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
@@ -70,8 +71,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] BD Time Dual Grid EA v84.0 Initialized. Schedule: %02d:00 AM to %02d:00 PM BD Time. Target: $%.2f, Max DD: $%.2f", 
-               InpBDStartHour, InpBDEndHour - 12, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Zero-Hanging Dual Grid EA v85.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+               InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -111,7 +112,19 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 4. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
+   // 4. EOD FORCE LIQUIDATION (At 21:55 BD Time, close all positions & pendings so ZERO trades hang overnight)
+   if(InpForceEODClose && IsEODCloseTime())
+   {
+      if(totalOpenPositions > 0)
+      {
+         PrintFormat(">>> [EOD FORCE CLOSE] Closing all open positions at 21:55 BD Time (Profit: $%.2f)", totalProfitUSD);
+         CloseAllPositionsGuaranteed();
+         m_gridState = GRID_STATE_CLEANING;
+         return;
+      }
+   }
+
+   // 5. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
    if(InpUseTimeWindow && !IsWithinBDTradingHours())
    {
       // Outside BD trading hours: if no open positions exist, clean up pendings and pause!
@@ -125,10 +138,9 @@ void OnTick()
          ResetStateMachine();
          return;
       }
-      // If open positions exist outside BD trading hours, let them manage until profit exit or drawdown cap
    }
 
-   // 5. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
+   // 6. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
    if(m_gridState == GRID_STATE_CLEANING)
    {
       if(totalPendingOrders > 0)
@@ -142,17 +154,17 @@ void OnTick()
       }
    }
 
-   // 6. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 7. FAST TARGET PROFIT EXIT ($2.00 TARGET FOR 2.5X FASTER BASKET EXITS)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
-      PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
+      PrintFormat(">>> [FAST NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       m_gridState = GRID_STATE_CLEANING;
       return;
    }
 
-   // 7. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
+   // 8. STATE 2: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -161,7 +173,7 @@ void OnTick()
       }
    }
 
-   // 8. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
+   // 9. STATE 3: PACED PLACEMENT OF INITIAL 11 BUY & 11 SELL STOPS (1 Order Per Tick)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
@@ -175,11 +187,22 @@ void OnTick()
       }
    }
 
-   // 9. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
+   // 10. STATE 4: PLACING 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick)
    if(totalOpenPositions > 0)
    {
       ManagePaced11CounterHedges(buyCount, sellCount);
    }
+}
+
+//+------------------------------------------------------------------+
+//| Check if current BD time is EOD Liquidation Time (21:55 BD Time) |
+//+------------------------------------------------------------------+
+bool IsEODCloseTime()
+{
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
+   return (bdHour == 21 && dt.min >= 55);
 }
 
 //+------------------------------------------------------------------+
@@ -190,7 +213,6 @@ bool IsWithinBDTradingHours()
    MqlDateTime dt;
    TimeCurrent(dt);
 
-   // Calculate Bangladesh Hour from Broker Server Time
    int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
 
    if(InpBDStartHour <= InpBDEndHour)
