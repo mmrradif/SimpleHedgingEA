@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 4-Layer Quad-Zone Interleaved Grid EA              |
+//| Description: 3-Zone Complete Coverage Grid EA                    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "59.00"
-#property description "4-Layer Quad-Zone Interleaved Grid EA (11 Buy Stops + 11 Middle Sell Stops + 11 Middle Buy Stops + 11 Sell Stops)"
+#property version   "60.00"
+#property description "3-Zone Complete Coverage Grid EA (Buy Zone + Both Way Center Gap Recovery + Sell Zone)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,10 +15,10 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - 11 Levels per Layer (0.01 -> 0.11)
+input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - 11 Levels (0.01 -> 0.11)
 input int      InpBaseGridStepPoints  = 200;      // Base Grid Distance (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpLayerOffsetPoints   = 50;       // Sandwich Layer Offset (50 Points = 5 Pips)
+input int      InpCenterGapStepPts    = 50;       // Center Gap Grid Step (50 Points = 5 Pips)
 input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
 
 input group "=== Break-Even Shield & Protection ==="
@@ -53,7 +53,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] 4-Layer Quad-Zone Grid EA v59.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 3-Zone Complete Coverage Grid EA v60.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -123,7 +123,7 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP 4-LAYER QUAD-ZONE PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP 3-ZONE COMPLETE COVERAGE PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -173,9 +173,8 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup 4-Layer Quad-Zone Interleaved Grid                         |
-//| (Layer 1: 11 BuyStops | Layer 2: 11 MidSellStops                 |
-//|  Layer 3: 11 MidBuyStops | Layer 4: 11 SellStops)               |
+//| Setup 3-Zone Complete Coverage Grid                              |
+//| (1. Buy Zone Up | 2. Center Gap Dual Recovery | 3. Sell Zone Down)|
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -193,7 +192,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11; // 11 Levels per Layer (0.01 to 0.11 Lot)
+   int stepCount = 11; // 11 Levels per Grid (0.01 to 0.11 Lot)
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -201,38 +200,38 @@ void SetupProgressivePendingGrid()
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
-   double layerOffset = InpLayerOffsetPoints * point; // 50 points = 5 pips
+   double gapStep = InpCenterGapStepPts * point; // 50 points = 5 pips
 
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
 
-      // --- LAYER 1: Top Main Buy Stop Grid (0.01 to 0.11) ---
+      // --- ZONE 1: Upper Buy Zone (BuyStops Going Up: 0.01 -> 0.11) ---
       double mainBuyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
       if(mainBuyPrice > ask + stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("L1_BuyStop #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyZone #%d", i));
       }
 
-      // --- LAYER 2: Middle Counter Sell Stop Grid (0.01 to 0.11, 5 pips below Layer 1) ---
-      double midSellPrice = NormalizeDouble(mainBuyPrice - layerOffset, _Digits);
-      if(midSellPrice < bid - stopLevel * point && midSellPrice > 0)
+      // --- ZONE 2A: Center Gap Sell Recovery (SellStops Going Down From Buy Zone Into Gap) ---
+      double gapSellPrice = NormalizeDouble(buyBasePrice - (i * gapStep), _Digits);
+      if(gapSellPrice < bid - stopLevel * point && gapSellPrice > sellBasePrice)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, midSellPrice, StringFormat("L2_MidSell #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, gapSellPrice, StringFormat("GapSell #%d", i));
       }
 
-      // --- LAYER 4: Bottom Main Sell Stop Grid (0.01 to 0.11) ---
+      // --- ZONE 3: Lower Sell Zone (SellStops Going Down: 0.01 -> 0.11) ---
       double mainSellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
       if(mainSellPrice < bid - stopLevel * point)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("L4_SellStop #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellZone #%d", i));
       }
 
-      // --- LAYER 3: Middle Counter Buy Stop Grid (0.01 to 0.11, 5 pips above Layer 4) ---
-      double midBuyPrice = NormalizeDouble(mainSellPrice + layerOffset, _Digits);
-      if(midBuyPrice > ask + stopLevel * point)
+      // --- ZONE 2B: Center Gap Buy Recovery (BuyStops Going Up From Sell Zone Into Gap) ---
+      double gapBuyPrice = NormalizeDouble(sellBasePrice + (i * gapStep), _Digits);
+      if(gapBuyPrice > ask + stopLevel * point && gapBuyPrice < buyBasePrice)
       {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, midBuyPrice, StringFormat("L3_MidBuy #%d", i));
+         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, gapBuyPrice, StringFormat("GapBuy #%d", i));
       }
 
       cumulativeBuyOffset += currentStepDistance;
