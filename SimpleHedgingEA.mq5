@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 6-Cycle Volume Capacity Dual Grid EA                |
+//| Description: 20-Pip Spacing & Inverted Refill Sequence EA        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "135.00"
-#property description "6-Cycle Capacity EA: Allows up to 6 full 0.01->0.11 lot cycles (3.96 Lots max volume cap) for continuous trading while keeping target at $0.50/0.01 lot ($5000 Max DD)"
+#property version   "136.00"
+#property description "20-Pip Spacing EA: Sets exact 20 pips gap between all grid levels and uses inverted lot sequence (0.11 -> 0.01) for refill orders to prevent losses ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -36,7 +36,7 @@ input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookb
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
+input int      InpBaseGridStepPoints  = 200;      // Base Grid Step (200 Points = EXACT 20 Pips Gap Between Orders)
 input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
 input double   InpMaxTotalVolumeCapLot = 3.96;    // Hard Total Volume Cap (3.96 Lots = 6 Full Cycles Cap)
 
@@ -80,8 +80,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] 6-Cycle Capacity Dual Grid EA v135.0 Initialized. Volume Cap: %.2f Lots (6 Cycles), Max DD: $%.2f", 
-               InpMaxTotalVolumeCapLot, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] 20-Pip Spacing & Inverted Refill EA v136.0 Initialized. Step: %d Points (20 Pips), Max DD: $%.2f", 
+               InpBaseGridStepPoints, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -135,7 +135,7 @@ void OnTick()
       return;
    }
 
-   // 5. CONTINUOUS REFILL CONTROLLED UP TO 6 FULL CYCLES (3.96 LOTS CAP)
+   // 5. CONTINUOUS INVERTED REFILL CONTROLLED UP TO VOLUME CAP
    if((!InpUseTimeWindow || IsWithinBDTradingHours()) && totalLot < InpMaxTotalVolumeCapLot)
    {
       RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
@@ -165,7 +165,7 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops up to 6 Full Cycles                 |
+//| Refill Missing Pending Stops with 20-Pip Spacing & Inverted Lots |
 //+------------------------------------------------------------------+
 void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
 {
@@ -184,12 +184,13 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
    double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
    double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Refill BuyStops if less than 11 active and within 6-cycle cap
+   // Refill BuyStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
    if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeBuyStops + 1;
-      double lot = NormalizeLot(InpStartLot + (levelIndex - 1) * InpLotStep);
-      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point;
+      // Inverted Lot Sequence: 0.11 -> 0.01
+      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
       double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
       if(price > ask + stopLevel * point)
@@ -199,12 +200,13 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
       return; // 1 Order per tick!
    }
 
-   // Refill SellStops if less than 11 active and within 6-cycle cap
+   // Refill SellStops with 20 Pips Spacing (Inverted lot order 0.11 -> 0.01 for refill)
    if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeSellStops + 1;
-      double lot = NormalizeLot(InpStartLot + (levelIndex - 1) * InpLotStep);
-      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point;
+      // Inverted Lot Sequence: 0.11 -> 0.01
+      double lot = NormalizeLot(InpStartLot + (InpMaxGridLevels - levelIndex) * InpLotStep);
+      double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point; // 20 Pips Spacing
       double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
       if(price < bid - stopLevel * point)
