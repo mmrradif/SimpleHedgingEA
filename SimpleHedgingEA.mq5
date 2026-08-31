@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Counter-Hedge Protection Dual Grid EA               |
+//| Description: 20-Pip Offset Dual Grid EA (Buy & Sell Grid Alignment)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "119.00"
-#property description "Counter-Hedge Protection Dual Grid EA: Automatically places Counter Pending Orders when position triggers to protect against market reversals ($5000.00 Max DD)"
+#property version   "120.00"
+#property description "20-Pip Offset Dual Grid EA: Places 11 BuyStops at M1 High and 11 SellStops starting 20 pips below BuyStops ($5.00 Target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,17 +23,13 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
-input group "=== Counter-Hedge Reversal Protection ==="
-input bool     InpUseCounterHedge      = true;     // Enable Counter Hedge Protection (Sets SellStop when Buy triggers)
-input int      InpCounterOffsetPoints  = 200;      // Counter Hedge Offset (200 Points = 20 Pips Below/Above)
-input double   InpCounterLotMultiplier = 1.5;      // Counter Lot Multiplier (1.5x of triggered lot)
-
 input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
+input int      InpSellOffsetFromBuy   = 200;      // Sell Grid Offset Below Buy Grid (200 Points = 20 Pips Below BuyStops)
 
 input group "=== Profit Target Settings ==="
 input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
@@ -63,7 +59,6 @@ int              m_buyGridPlacedCount;
 int              m_sellGridPlacedCount;
 bool             m_buySideClosed;
 bool             m_sellSideClosed;
-ulong            m_lastCounterHedgeTicket;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -81,7 +76,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Counter-Hedge Protection EA v119.0 Initialized. Target: $%.2f, Total Max DD: $%.2f", 
+   PrintFormat("[INIT] 20-Pip Offset Dual Grid EA v120.0 Initialized. Target: $%.2f, Total Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -113,17 +108,7 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // ------------------------------------------------------------------
-   // 3. DYNAMIC COUNTER-HEDGE PROTECTION LOGIC:
-   //    When Buy position triggers, automatically place a Counter SellStop
-   //    below it! If price reverses, Counter SellStop triggers to protect!
-   // ------------------------------------------------------------------
-   if(InpUseCounterHedge && totalOpenPositions > 0)
-   {
-      ManageCounterHedgeOrders(buyCount, sellCount, totalBuyLot, totalSellLot);
-   }
-
-   // 4. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
+   // 3. TOTAL BASKET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [TOTAL BASKET PROFIT EXIT!] Net Profit $%.2f >= Target $%.2f. Closing all positions IN PROFIT...", 
@@ -134,7 +119,7 @@ void OnTick()
       return;
    }
 
-   // 5. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
+   // 4. INDEPENDENT BUY-SIDE PROFIT EXIT ($5.00 TARGET)
    if(buyCount > 0 && buyProfitUSD >= InpBuySideTargetUSD)
    {
       PrintFormat(">>> [BUY SIDE PROFIT EXIT!] Buy Profit $%.2f >= $%.2f. Closing Buy side IN PROFIT...", buyProfitUSD, InpBuySideTargetUSD);
@@ -146,7 +131,7 @@ void OnTick()
       return;
    }
 
-   // 6. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
+   // 5. INDEPENDENT SELL-SIDE PROFIT EXIT ($5.00 TARGET)
    if(sellCount > 0 && sellProfitUSD >= InpSellSideTargetUSD)
    {
       PrintFormat(">>> [SELL SIDE PROFIT EXIT!] Sell Profit $%.2f >= $%.2f. Closing Sell side IN PROFIT...", sellProfitUSD, InpSellSideTargetUSD);
@@ -158,13 +143,13 @@ void OnTick()
       return;
    }
 
-   // 7. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
+   // 6. RESTART FRESH GRID WHEN BOTH SIDES CLOSED
    if(m_buySideClosed && m_sellSideClosed && totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       ResetStateMachine();
    }
 
-   // 8. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
+   // 7. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -173,7 +158,7 @@ void OnTick()
       }
    }
 
-   // 9. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
+   // 8. STATE: PACED PLACEMENT OF INITIAL DUAL GRID
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
       if(m_buyGridPlacedCount < InpMaxGridLevels || m_sellGridPlacedCount < InpMaxGridLevels)
@@ -184,77 +169,6 @@ void OnTick()
       else
       {
          m_gridState = GRID_STATE_ACTIVE;
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Manage Dynamic Counter-Hedge Protection Orders                   |
-//+------------------------------------------------------------------+
-void ManageCounterHedgeOrders(int buyCount, int sellCount, double totalBuyLot, double totalSellLot)
-{
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-
-   if(bid <= 0 || ask <= 0 || point <= 0) return;
-
-   // Check if Counter SellStop is needed for active Buy positions
-   if(buyCount > 0 && sellCount == 0)
-   {
-      int counterSellStopCount = 0;
-      for(int i = OrdersTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = OrderGetTicket(i);
-         if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
-         {
-            if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_SELL_STOP && OrderGetString(ORDER_COMMENT) == "CounterHedgeSell")
-            {
-               counterSellStopCount++;
-            }
-         }
-      }
-
-      // If no Counter SellStop exists, place one 20 pips below current Bid
-      if(counterSellStopCount == 0)
-      {
-         double hedgeLot = NormalizeLot(totalBuyLot * InpCounterLotMultiplier);
-         double hedgePrice = NormalizeDouble(bid - InpCounterOffsetPoints * point, _Digits);
-
-         if(hedgePrice < bid - stopLevel * point)
-         {
-            PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, hedgeLot, hedgePrice, "CounterHedgeSell");
-         }
-      }
-   }
-
-   // Check if Counter BuyStop is needed for active Sell positions
-   if(sellCount > 0 && buyCount == 0)
-   {
-      int counterBuyStopCount = 0;
-      for(int i = OrdersTotal() - 1; i >= 0; i--)
-      {
-         ulong ticket = OrderGetTicket(i);
-         if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
-         {
-            if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE) == ORDER_TYPE_BUY_STOP && OrderGetString(ORDER_COMMENT) == "CounterHedgeBuy")
-            {
-               counterBuyStopCount++;
-            }
-         }
-      }
-
-      // If no Counter BuyStop exists, place one 20 pips above current Ask
-      if(counterBuyStopCount == 0)
-      {
-         double hedgeLot = NormalizeLot(totalSellLot * InpCounterLotMultiplier);
-         double hedgePrice = NormalizeDouble(ask + InpCounterOffsetPoints * point, _Digits);
-
-         if(hedgePrice > ask + stopLevel * point)
-         {
-            PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, hedgeLot, hedgePrice, "CounterHedgeBuy");
-         }
       }
    }
 }
@@ -300,7 +214,6 @@ void ResetStateMachine()
    m_sellGridPlacedCount = 0;
    m_buySideClosed       = false;
    m_sellSideClosed      = false;
-   m_lastCounterHedgeTicket = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -338,7 +251,9 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Exact M1 Zone Dual Grid                                    |
+//| Setup 20-Pip Offset Dual Grid                                    |
+//| BuyStops start AT M1 High                                       |
+//| SellStops start EXACTLY 20 PIPS BELOW BuyStops                  |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -352,12 +267,12 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Buy Base starts EXACTLY at M1 High
+   // Buy Base starts AT M1 High
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   // Sell Base starts EXACTLY at M1 Low
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+   // Sell Base starts EXACTLY 20 Pips (200 Points) BELOW buyBasePrice
+   double sellBasePrice = MathMin(buyBasePrice - InpSellOffsetFromBuy * point, bid - (stopLevel + 15) * point);
 
-   // Place Buy Stops up to InpMaxGridLevels
+   // Place Buy Stops up to InpMaxGridLevels (0.01 to 0.11 lot)
    if(m_buyGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_buyGridPlacedCount + 1;
@@ -379,7 +294,7 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place Sell Stops up to InpMaxGridLevels
+   // Place Sell Stops starting 20 pips below BuyStops (0.01 to 0.11 lot)
    if(m_sellGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_sellGridPlacedCount + 1;
