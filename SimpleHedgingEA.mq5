@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 11-Level Paced Dual Grid EA                        |
+//| Description: Pure Original Dual Grid EA (BuyStops & SellStops)   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "70.00"
-#property description "11-Level Paced Dual Grid EA (11 BuyStops in Buy Zone + 11 SellStops in Sell Zone - Paced Anti-Spam Zero Block)"
+#property version   "71.00"
+#property description "Pure Original Dual Grid EA (11 BuyStops in Buy Zone + 11 SellStops in Sell Zone - Zero Complex Hedging Loops)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,16 +15,10 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Orders (0.01 -> 0.11)
-input int      InpBaseGridStepPoints  = 200;      // Grid Distance Between Levels (200 Points = 20 Pips)
+input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - Exactly 11 Levels (0.01 -> 0.11)
+input int      InpBaseGridStepPoints  = 250;      // Base Grid Step Distance (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips)
-input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
-
-input group "=== Break-Even Shield & Protection ==="
-input bool     InpEnableBreakEven     = true;     // Enable Break-Even Profit Shield
-input double   InpBETriggerUSD        = 1.50;     // Profit Level to Trigger Break-Even ($1.50)
-input double   InpBELockUSD           = 0.50;     // Minimum Profit to Lock-In ($0.50)
+input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
@@ -36,11 +30,8 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
-double         m_peakBasketProfit;
 int            m_buyGridPlacedCount;
 int            m_sellGridPlacedCount;
-int            m_buyCounterPlacedCount;
-int            m_sellCounterPlacedCount;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -58,7 +49,7 @@ int OnInit()
    
    ResetCounters();
 
-   PrintFormat("[INIT] 11-Level Paced Dual Grid EA v70.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Pure Original Dual Grid EA v71.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -94,13 +85,6 @@ void OnTick()
    {
       ResetCounters();
    }
-   else
-   {
-      if(totalProfitUSD > m_peakBasketProfit)
-      {
-         m_peakBasketProfit = totalProfitUSD;
-      }
-   }
 
    // 3. PACED PENDING ORDER DELETION (Paced 1 deletion per tick)
    if(totalOpenPositions == 0 && totalPendingOrders > 0)
@@ -109,20 +93,7 @@ void OnTick()
       return;
    }
 
-   // 4. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
-   if(InpEnableBreakEven && totalOpenPositions > 0 && m_peakBasketProfit >= InpBETriggerUSD)
-   {
-      if(totalProfitUSD <= InpBELockUSD)
-      {
-         PrintFormat(">>> [BREAK-EVEN SHIELD EXIT] Profit dropped to $%.2f after peaking at $%.2f. Securing profit!", 
-                     totalProfitUSD, m_peakBasketProfit);
-         CloseAllPositionsGuaranteed();
-         ResetCounters();
-         return;
-      }
-   }
-
-   // 5. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 4. GUARANTEED TARGET PROFIT EXIT ($2.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
@@ -132,17 +103,11 @@ void OnTick()
       return;
    }
 
-   // 6. PACED 11-LEVEL INITIAL GRID PLACEMENT (1 Order Per Tick Max)
+   // 5. PACED 11-LEVEL INITIAL GRID PLACEMENT (1 Order Per Tick Max)
    if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11))
    {
       SetupPaced11InitialGrid();
       return;
-   }
-
-   // 7. PACED 11-LEVEL COUNTER HEDGE PLACEMENT (1 Order Per Tick Max)
-   if(totalOpenPositions > 0)
-   {
-      ManagePaced11CounterHedges(buyCount, sellCount);
    }
 }
 
@@ -151,11 +116,8 @@ void OnTick()
 //+------------------------------------------------------------------+
 void ResetCounters()
 {
-   m_peakBasketProfit = 0.0;
    m_buyGridPlacedCount = 0;
    m_sellGridPlacedCount = 0;
-   m_buyCounterPlacedCount = 0;
-   m_sellCounterPlacedCount = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -241,75 +203,6 @@ void SetupPaced11InitialGrid()
 }
 
 //+------------------------------------------------------------------+
-//| Manage Paced 11-Level Counter Hedges (1 Order Per Tick)          |
-//+------------------------------------------------------------------+
-void ManagePaced11CounterHedges(int buyCount, int sellCount)
-{
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double hedgeGap = InpDynamicHedgeGapPts * point; // 200 points = 20 pips
-
-   double startLot = 0.01;
-   double lotStep = 0.01;
-
-   // 1. Buy triggered -> Place 11 Counter Sell Stops (1 per tick: 0.01 to 0.11)
-   if(buyCount > 0 && m_sellCounterPlacedCount < 11)
-   {
-      double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
-      if(firstBuyPrice > 0)
-      {
-         int i = m_sellCounterPlacedCount + 1;
-         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-         double sellBasePrice = firstBuyPrice - hedgeGap;
-         double cumulativeOffset = GetCumulativeOffset(i);
-         double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
-
-         if(price < bid - stopLevel * point && price > 0)
-         {
-            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("CounterSell #%d", i)))
-            {
-               m_sellCounterPlacedCount++;
-            }
-         }
-         else
-         {
-            m_sellCounterPlacedCount++;
-         }
-      }
-      return;
-   }
-
-   // 2. Sell triggered -> Place 11 Counter Buy Stops (1 per tick: 0.01 to 0.11)
-   if(sellCount > 0 && m_buyCounterPlacedCount < 11)
-   {
-      double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
-      if(firstSellPrice > 0)
-      {
-         int i = m_buyCounterPlacedCount + 1;
-         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
-         double buyBasePrice = firstSellPrice + hedgeGap;
-         double cumulativeOffset = GetCumulativeOffset(i);
-         double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
-
-         if(price > ask + stopLevel * point)
-         {
-            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("CounterBuy #%d", i)))
-            {
-               m_buyCounterPlacedCount++;
-            }
-         }
-         else
-         {
-            m_buyCounterPlacedCount++;
-         }
-      }
-      return;
-   }
-}
-
-//+------------------------------------------------------------------+
 //| Calculate Grid Distance Offset                                   |
 //+------------------------------------------------------------------+
 double GetCumulativeOffset(int level)
@@ -324,25 +217,6 @@ double GetCumulativeOffset(int level)
       currentStepDistance *= InpSpacingMultiplier;
    }
    return cumulativeOffset;
-}
-
-//+------------------------------------------------------------------+
-//| Get First Open Position Price by Type                            |
-//+------------------------------------------------------------------+
-double GetFirstPositionOpenPrice(ENUM_POSITION_TYPE posType)
-{
-   for(int i = 0; i < PositionsTotal(); i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-      {
-         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
-         {
-            return PositionGetDouble(POSITION_PRICE_OPEN);
-         }
-      }
-   }
-   return 0.0;
 }
 
 //+------------------------------------------------------------------+
