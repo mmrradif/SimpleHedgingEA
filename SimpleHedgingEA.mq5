@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Fast Basket Exit & EOD Liquidation Dual Grid EA    |
+//| Description: 100% Guaranteed Profit-Only Basket Liquidation EA  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "85.00"
-#property description "Clean State Machine Dual Grid EA with $2.00 Fast Basket Exit & EOD Night Liquidation (Zero Hanging Trades)"
+#property version   "86.00"
+#property description "Clean State Machine Dual Grid EA (Strict Profit-Only Basket Liquidations - Never Closes at a Loss)"
 
 #include <Trade\Trade.mqh>
 
@@ -36,7 +36,7 @@ input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
 input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
 input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD Time GMT+6 minus Broker Server Time GMT+3 = 3 Hours)
-input bool     InpForceEODClose       = true;     // Force Close All Positions at EOD (21:55 BD Time)
+input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close ONLY IF PROFITABLE (Never closes at a loss)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Maximum Allowed Drawdown ($5000.00 Max USD Loss)
@@ -71,7 +71,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Zero-Hanging Dual Grid EA v85.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Profit-Only Dual Grid EA v86.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -112,12 +112,12 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 4. EOD FORCE LIQUIDATION (At 21:55 BD Time, close all positions & pendings so ZERO trades hang overnight)
-   if(InpForceEODClose && IsEODCloseTime())
+   // 4. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time, close ONLY if totalProfitUSD > 0.0)
+   if(InpEODProfitOnlyClose && IsEODCloseTime())
    {
-      if(totalOpenPositions > 0)
+      if(totalOpenPositions > 0 && totalProfitUSD > 0.0)
       {
-         PrintFormat(">>> [EOD FORCE CLOSE] Closing all open positions at 21:55 BD Time (Profit: $%.2f)", totalProfitUSD);
+         PrintFormat(">>> [EOD PROFIT EXIT] Closing all open positions IN PROFIT at 21:55 BD Time (Profit: $%.2f > $0.00)", totalProfitUSD);
          CloseAllPositionsGuaranteed();
          m_gridState = GRID_STATE_CLEANING;
          return;
@@ -138,6 +138,7 @@ void OnTick()
          ResetStateMachine();
          return;
       }
+      // If open positions exist outside BD trading hours, let them manage until PROFIT EXIT
    }
 
    // 6. STATE 1: CLEANING UP PENDINGS AFTER PROFIT EXIT
@@ -154,10 +155,10 @@ void OnTick()
       }
    }
 
-   // 7. FAST TARGET PROFIT EXIT ($2.00 TARGET FOR 2.5X FASTER BASKET EXITS)
+   // 7. GUARANTEED STRICT PROFIT BASKET EXIT ($2.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
-      PrintFormat(">>> [FAST NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
+      PrintFormat(">>> [PROFIT BASKET EXIT!] Net Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions IN PROFIT...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       m_gridState = GRID_STATE_CLEANING;
