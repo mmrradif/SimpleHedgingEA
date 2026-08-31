@@ -2,23 +2,23 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: High-Profit Scaled Grid EA (0.02 to 0.12 Lot)       |
+//| Description: Original Best Profitable Grid EA (0.01-0.10 Lot)    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "50.00"
-#property description "High-Profit Scaled Grid EA (0.02 to 0.12 Lot, $1.00 - $4.00 Fast Target Exits)"
+#property version   "51.00"
+#property description "Original Best Profitable Pending Grid EA (0.01-0.10 Lot, $2.00 Target, Instant $500 Cutoff)"
 
 #include <Trade\Trade.mqh>
 
 //--- Input Parameters
 input group "=== Grid & Lot Settings ==="
-input double   InpStartLot            = 0.02;     // Initial Starting Lot (0.02)
-input double   InpLotStep             = 0.02;     // Lot Increment Step (0.02)
-input double   InpMaxLotLimit         = 0.12;     // Max Lot Limit (0.12) - 6 Orders (0.02, 0.04, 0.06, 0.08, 0.10, 0.12)
-input int      InpBaseGridStepPoints  = 200;      // Distance Between Levels (200 Points = 20 Pips)
-input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input double   InpTargetProfitUSD     = 3.00;     // Fast Target Net Profit ($3.00 Close All)
+input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
+input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
+input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
+input int      InpBaseGridStepPoints  = 200;      // Base Distance Between Levels (200 Points = 20 Pips)
+input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Original 1.20)
+input double   InpTargetProfitUSD     = 2.00;     // Target Net Profit per Basket ($2.00 Close All)
 
 input group "=== Risk Control & Direction Lock ==="
 input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
@@ -46,7 +46,8 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] High-Profit Grid EA v50.0 Initialized. Lot: 0.02-0.12, Max DD: $%.2f", InpMaxDrawdownUSD);
+   PrintFormat("[INIT] Original Best Grid EA v51.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+               InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -59,22 +60,11 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| High-Profit Scaled Target Profit Calculator                      |
-//+------------------------------------------------------------------+
-double GetTargetProfitForCount(int tradeCount)
-{
-   if(tradeCount == 1) return 1.00; // 0.02 lot requires 5 pips ($1.00 profit)
-   if(tradeCount == 2) return 2.00; // 0.02+0.04 lot requires 3.3 pips ($2.00 profit)
-   if(tradeCount >= 3 && tradeCount <= 5) return 4.00; // 3-5 trades exit at $4.00 profit
-   return 2.00; // 6th trade quick break-even rescue exit ($2.00)
-}
-
-//+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // 1. Strict Emergency Drawdown Check (POSITIONS CLOSED FIRST!)
+   // 1. Strict Emergency Drawdown Check (POSITIONS CLOSED FIRST IN MILLISECONDS!)
    if(CheckEquityProtection())
    {
       return;
@@ -100,24 +90,19 @@ void OnTick()
       }
    }
 
-   // 4. HIGH-PROFIT SCALED EXIT (0.02: $1.00, 0.04: $2.00, 3-5: $4.00, 6: $2.00)
-   if(totalOpenPositions > 0)
+   // 4. GUARANTEED BASKET PROFIT EXIT ($2.00 TARGET)
+   if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
-      double requiredTargetUSD = GetTargetProfitForCount(totalOpenPositions);
+      PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing positions...", 
+                  totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
+      CloseAllPositionsGuaranteed();
+      DeleteAllPendingOrdersGuaranteed();
       
-      if(totalProfitUSD >= requiredTargetUSD)
-      {
-         PrintFormat(">>> [HIGH PROFIT HIT!] Trades: %d, Profit: $%.2f >= $%.2f. Closing positions...", 
-                     totalOpenPositions, totalProfitUSD, requiredTargetUSD);
-         CloseAllPositionsGuaranteed();
-         DeleteAllPendingOrdersGuaranteed();
-         
-         SetupProgressivePendingGrid();
-         return;
-      }
+      SetupProgressivePendingGrid();
+      return;
    }
 
-   // 5. SETUP 6-ORDER HIGH-PROFIT PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -167,7 +152,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup High-Profit Progressive Grid (6 Orders: 0.02 -> 0.12)      |
+//| Setup Progressive Spacing Pending Grid (10 Orders: 0.01 -> 0.10) |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -183,10 +168,9 @@ void SetupProgressivePendingGrid()
 
    DeleteAllPendingOrdersGuaranteed();
 
-   double startLot = InpStartLot;
-   double lotStep = InpLotStep;
-   int stepCount = (int)MathRound((InpMaxLotLimit - startLot) / lotStep) + 1;
-   if(stepCount < 1) stepCount = 6;
+   double startLot = 0.01;
+   double lotStep = 0.01;
+   int stepCount = 10;
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -195,13 +179,13 @@ void SetupProgressivePendingGrid()
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 1. Place BUY STOP Orders (0.02, 0.04, 0.06, 0.08, 0.10, 0.12)
+   // 1. Place 10 BUY STOP Orders (0.01 to 0.10)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
 
-      PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop High Profit");
+      PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop 0.01-0.10");
       cumulativeBuyOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
@@ -209,13 +193,13 @@ void SetupProgressivePendingGrid()
    // Reset step distance for Sell grid
    currentStepDistance = InpBaseGridStepPoints * point;
 
-   // 2. Place SELL STOP Orders (0.02, 0.04, 0.06, 0.08, 0.10, 0.12)
+   // 2. Place 10 SELL STOP Orders (0.01 to 0.10)
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
       double price = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
 
-      PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop High Profit");
+      PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop 0.01-0.10");
       cumulativeSellOffset += currentStepDistance;
       currentStepDistance *= InpSpacingMultiplier;
    }
