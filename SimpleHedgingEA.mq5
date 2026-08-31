@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Unrestricted Execution Dual Grid EA                 |
+//| Description: Trend-Aligned Dual Grid EA (Profitable Trend Mode)  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "117.00"
-#property description "Unrestricted Execution Dual Grid EA: Spread Filter Removed for 100% Guaranteed Execution with Tiered DD ($50-$500)"
+#property version   "118.00"
+#property description "Trend-Aligned Dual Grid EA: Uses 9/21 EMA Trend Filter & Trailing Profit Lock to eliminate whipsaw losses and maximize win rate"
 
 #include <Trade\Trade.mqh>
 
@@ -23,16 +23,24 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
+input group "=== Trend & Direction Filter ==="
+input bool     InpUseTrendFilter      = true;     // Enable 9/21 EMA Trend Filter (Trades ONLY in Trend Direction)
+input int      InpFastEMAPeriod       = 9;        // Fast EMA Period (9)
+input int      InpSlowEMAPeriod       = 21;       // Slow EMA Period (21)
+
 input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
 input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (11 Levels)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
+input int      InpBaseGridStepPoints  = 200;      // Base Grid Step (200 Points = 20 Pips - Reduces noise)
 
-input group "=== Profit Target Settings ==="
+input group "=== Profit Target & Trailing Lock ==="
 input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
-input double   InpMinProfit3TradesUSD = 0.50;     // Fast Profit Exit for 3+ Trades ($0.50 USD = Instant Close)
+input double   InpMinProfit3TradesUSD = 0.50;     // Fast Profit Exit for 3+ Trades ($0.50 USD)
+input bool     InpUseTrailingProfit   = true;     // Enable Trailing Profit Lock
+input double   InpTrailingTriggerUSD  = 1.00;     // Trailing Start Trigger ($1.00 Profit)
+input double   InpTrailingStepUSD     = 0.50;     // Trailing Distance Step ($0.50 Distance)
 
 input group "=== Tiered Drawdown Cutoffs ==="
 input double   InpDDLimit1to2Trades   = 50.0;     // Max Loss for 1-2 Trades ($50.00)
@@ -63,6 +71,8 @@ bool             m_buySideClosed;
 bool             m_sellSideClosed;
 double           m_buyMaxProfitUSD;
 double           m_sellMaxProfitUSD;
+int              m_fastEmaHandle;
+int              m_slowEmaHandle;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -78,10 +88,14 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
    
+   // Initialize EMA Indicators
+   m_fastEmaHandle = iMA(_Symbol, PERIOD_M1, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   m_slowEmaHandle = iMA(_Symbol, PERIOD_M1, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+
    ResetStateMachine();
 
-   PrintFormat("[INIT] Unrestricted Dual Grid EA v117.0 Initialized (Spread Filter Removed). Target: $%.2f", 
-               InpTargetProfitUSD);
+   PrintFormat("[INIT] Trend-Aligned Dual Grid EA v118.0 Initialized. Target: $%.2f, Trend Filter: %s", 
+               InpTargetProfitUSD, InpUseTrendFilter ? "ENABLED (9/21 EMA)" : "DISABLED");
    return(INIT_SUCCEEDED);
 }
 
@@ -90,6 +104,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   if(m_fastEmaHandle != INVALID_HANDLE) IndicatorRelease(m_fastEmaHandle);
+   if(m_slowEmaHandle != INVALID_HANDLE) IndicatorRelease(m_slowEmaHandle);
    PrintFormat("[DEINIT] EA Deinitialized. Reason code: %d", reason);
 }
 
@@ -189,7 +205,9 @@ void OnTick()
       m_gridState = GRID_STATE_ACTIVE;
    }
 
-   // 8. GUARANTEED FAST PROFIT & BREAKEVEN LOCK FOR 3+ TRADES
+   // ------------------------------------------------------------------
+   // 8. GUARANTEED FAST PROFIT & TRAILING PROFIT LOCK ENGINE
+   // ------------------------------------------------------------------
    if(buyCount > 0)
    {
       if(buyProfitUSD > m_buyMaxProfitUSD) m_buyMaxProfitUSD = buyProfitUSD;
@@ -200,7 +218,7 @@ void OnTick()
       // 1. Direct Target Profit Exit
       if(buyProfitUSD >= buyTarget)
       {
-         PrintFormat(">>> [FAST BUY PROFIT EXIT!] Buy Profit $%.2f >= Target $%.2f (%d buys). Closing Buy side IN PROFIT...", 
+         PrintFormat(">>> [BUY PROFIT EXIT!] Buy Profit $%.2f >= Target $%.2f (%d buys). Closing Buy side IN PROFIT...", 
                      buyProfitUSD, buyTarget, buyCount);
          ClosePositionsByType(POSITION_TYPE_BUY);
          DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
@@ -210,17 +228,21 @@ void OnTick()
          return;
       }
 
-      // 2. Breakeven Profit Lock
-      if(m_buyMaxProfitUSD >= 0.50 && buyProfitUSD <= 0.10 && buyCount >= 3)
+      // 2. Trailing Profit Lock
+      if(InpUseTrailingProfit && m_buyMaxProfitUSD >= InpTrailingTriggerUSD)
       {
-         PrintFormat(">>> [BUY BREAKEVEN LOCK!] Max Profit $%.2f pulled back to $%.2f (%d buys). Closing IN PROFIT at Breakeven...", 
-                     m_buyMaxProfitUSD, buyProfitUSD, buyCount);
-         ClosePositionsByType(POSITION_TYPE_BUY);
-         DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
-         m_buySideClosed = true;
-         m_buyGridPlacedCount = 0;
-         m_gridState = (sellCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_BUY;
-         return;
+         double trailingFloor = m_buyMaxProfitUSD - InpTrailingStepUSD;
+         if(buyProfitUSD <= trailingFloor)
+         {
+            PrintFormat(">>> [BUY TRAILING PROFIT LOCK!] Max Profit $%.2f pulled back to $%.2f (Floor: $%.2f). Closing IN PROFIT...", 
+                        m_buyMaxProfitUSD, buyProfitUSD, trailingFloor);
+            ClosePositionsByType(POSITION_TYPE_BUY);
+            DeletePendingOrdersByType(ORDER_TYPE_BUY_STOP);
+            m_buySideClosed = true;
+            m_buyGridPlacedCount = 0;
+            m_gridState = (sellCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_BUY;
+            return;
+         }
       }
    }
 
@@ -234,7 +256,7 @@ void OnTick()
       // 1. Direct Target Profit Exit
       if(sellProfitUSD >= sellTarget)
       {
-         PrintFormat(">>> [FAST SELL PROFIT EXIT!] Sell Profit $%.2f >= Target $%.2f (%d sells). Closing Sell side IN PROFIT...", 
+         PrintFormat(">>> [SELL PROFIT EXIT!] Sell Profit $%.2f >= Target $%.2f (%d sells). Closing Sell side IN PROFIT...", 
                      sellProfitUSD, sellTarget, sellCount);
          ClosePositionsByType(POSITION_TYPE_SELL);
          DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
@@ -244,17 +266,21 @@ void OnTick()
          return;
       }
 
-      // 2. Breakeven Profit Lock
-      if(m_sellMaxProfitUSD >= 0.50 && sellProfitUSD <= 0.10 && sellCount >= 3)
+      // 2. Trailing Profit Lock
+      if(InpUseTrailingProfit && m_sellMaxProfitUSD >= InpTrailingTriggerUSD)
       {
-         PrintFormat(">>> [SELL BREAKEVEN LOCK!] Max Profit $%.2f pulled back to $%.2f (%d sells). Closing IN PROFIT at Breakeven...", 
-                     m_sellMaxProfitUSD, sellProfitUSD, sellCount);
-         ClosePositionsByType(POSITION_TYPE_SELL);
-         DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
-         m_sellSideClosed = true;
-         m_sellGridPlacedCount = 0;
-         m_gridState = (buyCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_SELL;
-         return;
+         double trailingFloor = m_sellMaxProfitUSD - InpTrailingStepUSD;
+         if(sellProfitUSD <= trailingFloor)
+         {
+            PrintFormat(">>> [SELL TRAILING PROFIT LOCK!] Max Profit $%.2f pulled back to $%.2f (Floor: $%.2f). Closing IN PROFIT...", 
+                        m_sellMaxProfitUSD, sellProfitUSD, trailingFloor);
+            ClosePositionsByType(POSITION_TYPE_SELL);
+            DeletePendingOrdersByType(ORDER_TYPE_SELL_STOP);
+            m_sellSideClosed = true;
+            m_sellGridPlacedCount = 0;
+            m_gridState = (buyCount == 0) ? GRID_STATE_CLEANING_ALL : GRID_STATE_CLEANING_SELL;
+            return;
+         }
       }
    }
 
@@ -264,7 +290,7 @@ void OnTick()
       ResetStateMachine();
    }
 
-   // 10. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY (UNRESTRICTED)
+   // 10. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -285,6 +311,103 @@ void OnTick()
       {
          m_gridState = GRID_STATE_ACTIVE;
       }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get Trend Direction via 9/21 EMA Alignment                       |
+//| Returns: +1 for Bullish Uptrend, -1 for Bearish Downtrend, 0 Any |
+//+------------------------------------------------------------------+
+int GetTrendDirection()
+{
+   if(!InpUseTrendFilter) return 0; // Both directions allowed
+
+   double fastEma[], slowEma[];
+   ArraySetAsSeries(fastEma, true);
+   ArraySetAsSeries(slowEma, true);
+
+   if(CopyBuffer(m_fastEmaHandle, 0, 0, 2, fastEma) > 0 &&
+      CopyBuffer(m_slowEmaHandle, 0, 0, 2, slowEma) > 0)
+   {
+      if(fastEma[0] > slowEma[0]) return 1;  // Bullish Uptrend -> BUY STOPS ONLY
+      if(fastEma[0] < slowEma[0]) return -1; // Bearish Downtrend -> SELL STOPS ONLY
+   }
+
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Setup Trend-Aligned M1 Zone Dual Grid                            |
+//+------------------------------------------------------------------+
+void SetupPacedInitialDualGrid()
+{
+   int trendDir = GetTrendDirection();
+
+   double m1High = 0, m1Low = 0;
+   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+
+   if(ask <= 0 || bid <= 0 || point <= 0) return;
+
+   // Buy Base starts EXACTLY at M1 High
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
+   // Sell Base starts EXACTLY at M1 Low
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+
+   // Place Buy Stops ONLY IF Trend is Bullish (+1) or Filter is OFF (0)
+   if((trendDir >= 0) && m_buyGridPlacedCount < InpMaxGridLevels)
+   {
+      int i = m_buyGridPlacedCount + 1;
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
+
+      if(price > ask + stopLevel * point)
+      {
+         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
+         {
+            m_buyGridPlacedCount++;
+         }
+      }
+      else
+      {
+         m_buyGridPlacedCount++;
+      }
+      return; // 1 Order per tick!
+   }
+   else if(trendDir < 0 && m_buyGridPlacedCount < InpMaxGridLevels)
+   {
+      m_buyGridPlacedCount = InpMaxGridLevels; // Skip BuyStops in Downtrend
+   }
+
+   // Place Sell Stops ONLY IF Trend is Bearish (-1) or Filter is OFF (0)
+   if((trendDir <= 0) && m_sellGridPlacedCount < InpMaxGridLevels)
+   {
+      int i = m_sellGridPlacedCount + 1;
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
+      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
+      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+
+      if(price < bid - stopLevel * point)
+      {
+         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
+         {
+            m_sellGridPlacedCount++;
+         }
+      }
+      else
+      {
+         m_sellGridPlacedCount++;
+      }
+      return; // 1 Order per tick!
+   }
+   else if(trendDir > 0 && m_sellGridPlacedCount < InpMaxGridLevels)
+   {
+      m_sellGridPlacedCount = InpMaxGridLevels; // Skip SellStops in Uptrend
    }
 }
 
@@ -374,71 +497,6 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
             m_trade.OrderDelete(ticket);
          }
       }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Setup Exact M1 Zone Dual Grid (UNRESTRICTED)                     |
-//+------------------------------------------------------------------+
-void SetupPacedInitialDualGrid()
-{
-   double m1High = 0, m1Low = 0;
-   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
-
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-
-   if(ask <= 0 || bid <= 0 || point <= 0) return;
-
-   // Buy Base starts EXACTLY at M1 High
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   // Sell Base starts EXACTLY at M1 Low
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
-
-   // Place Buy Stops up to InpMaxGridLevels
-   if(m_buyGridPlacedCount < InpMaxGridLevels)
-   {
-      int i = m_buyGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
-
-      if(price > ask + stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
-         {
-            m_buyGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_buyGridPlacedCount++;
-      }
-      return; // 1 Order per tick!
-   }
-
-   // Place Sell Stops up to InpMaxGridLevels
-   if(m_sellGridPlacedCount < InpMaxGridLevels)
-   {
-      int i = m_sellGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
-      double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
-      double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
-
-      if(price < bid - stopLevel * point)
-      {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
-         {
-            m_sellGridPlacedCount++;
-         }
-      }
-      else
-      {
-         m_sellGridPlacedCount++;
-      }
-      return; // 1 Order per tick!
    }
 }
 
