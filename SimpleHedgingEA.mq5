@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Guaranteed Fast Profit Exit EA for 3+ Trades        |
+//| Description: Strict Spread Filter Dual Grid EA                   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "114.00"
-#property description "Guaranteed 3+ Trade Fast Exit EA: 3+ open trades require only +$0.50 profit to close instantly in profit, with Breakeven protection"
+#property version   "115.00"
+#property description "Strict Spread Guard EA: Blocks grid placement if Ask-Bid spread exceeds maximum limit (Default 50 points = 5 pips)"
 
 #include <Trade\Trade.mqh>
 
@@ -41,15 +41,16 @@ input double   InpDDLimit5to6Trades   = 300.0;    // Max Loss for 5-6 Trades ($3
 input double   InpDDLimit7to8Trades   = 400.0;    // Max Loss for 7-8 Trades ($400.00)
 input double   InpDDLimit9PlusTrades  = 500.0;    // Max Loss for 9+ Trades ($500.00)
 
+input group "=== Strict Ask-Bid Spread Protection ==="
+input bool     InpUseSpreadGuard      = true;     // Enable Strict Spread Filter
+input int      InpMaxSpreadPoints     = 50;       // Max Allowed Ask-Bid Spread (50 Points = 5 Pips Max Limit)
+
 input group "=== Trading Schedule & Filters ==="
 input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for 24/7 execution)
 input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
 input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 minus Broker GMT+3 = 3 Hours)
 input bool     InpEODProfitOnlyClose  = false;    // Night EOD Close ONLY IF PROFITABLE
-
-input group "=== Risk Control & Spread Guard ==="
-input int      InpMaxSpreadPoints     = 300;      // Max Allowed Spread Filter (300 Points = 30 Pips)
 input double   InpMaxDrawdownPercent    = 90.0;   // Maximum Allowed Equity Drawdown (%)
 input bool     InpClosePendingsFriday   = false;  // Weekend Gap Guard
 
@@ -83,8 +84,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Guaranteed 3+ Fast Profit EA v114.0 Initialized. Target: $%.2f, 3+ Trades Exit: $%.2f", 
-               InpTargetProfitUSD, InpMinProfit3TradesUSD);
+   PrintFormat("[INIT] Strict Spread Filter EA v115.0 Initialized. Max Spread: %d Points (%s)", 
+               InpMaxSpreadPoints, InpUseSpreadGuard ? "ENABLED" : "DISABLED");
    return(INIT_SUCCEEDED);
 }
 
@@ -192,18 +193,13 @@ void OnTick()
       m_gridState = GRID_STATE_ACTIVE;
    }
 
-   // ------------------------------------------------------------------
    // 8. GUARANTEED FAST PROFIT & BREAKEVEN LOCK FOR 3+ TRADES
-   //    3+ open trades (0.01 + 0.02 + 0.03 + 0.04 = 0.10 lot total)
-   //    Moving just 0.5 - 1 pip gives +$0.50 profit -> CLOSES INSTANTLY IN PROFIT!
-   // ------------------------------------------------------------------
    if(buyCount > 0)
    {
       if(buyProfitUSD > m_buyMaxProfitUSD) m_buyMaxProfitUSD = buyProfitUSD;
 
-      // Target for 3+ trades is just +$0.50 USD (or +$0.50 for 1-2 trades)
       double buyTarget = (buyCount >= 3) ? InpMinProfit3TradesUSD : 0.50;
-      if(buyCount >= 8) buyTarget = InpTargetProfitUSD; // $5.00 for full grid
+      if(buyCount >= 8) buyTarget = InpTargetProfitUSD;
 
       // 1. Direct Target Profit Exit
       if(buyProfitUSD >= buyTarget)
@@ -218,7 +214,7 @@ void OnTick()
          return;
       }
 
-      // 2. Breakeven Profit Lock (If buy profit reached +$0.50 and started pulling back, close at +$0.10)
+      // 2. Breakeven Profit Lock
       if(m_buyMaxProfitUSD >= 0.50 && buyProfitUSD <= 0.10 && buyCount >= 3)
       {
          PrintFormat(">>> [BUY BREAKEVEN LOCK!] Max Profit $%.2f pulled back to $%.2f (%d buys). Closing IN PROFIT at Breakeven...", 
@@ -272,13 +268,18 @@ void OnTick()
       ResetStateMachine();
    }
 
-   // 10. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
+   // 10. STATE: EMPTY STATE -> CHECK SPREAD GUARD & START PLACEMENT
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
-      long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-      if(InpMaxSpreadPoints > 0 && currentSpread > InpMaxSpreadPoints)
+      // STRICT ASK-BID SPREAD GUARD CHECK
+      if(InpUseSpreadGuard)
       {
-         return; // Spread Guard
+         long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+         if(currentSpread > InpMaxSpreadPoints)
+         {
+            // Spread is too high! Pause trade placement completely!
+            return;
+         }
       }
 
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
@@ -392,10 +393,20 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Exact M1 Zone Dual Grid                                    |
+//| Setup Exact M1 Zone Dual Grid (With Strict Spread Verification)  |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
+   // Double check Spread before placing each order
+   if(InpUseSpreadGuard)
+   {
+      long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+      if(currentSpread > InpMaxSpreadPoints)
+      {
+         return; // Pause order placement if spread spikes!
+      }
+   }
+
    double m1High = 0, m1Low = 0;
    FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // 30 M1 Candles High & Low
 
