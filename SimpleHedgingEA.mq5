@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Paired Offset Counter-Hedging Grid EA               |
+//| Description: Break-Even Shield & Reversal Recovery Grid EA       |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "55.00"
-#property description "Paired Offset Counter-Hedging Grid EA (Sell @ 4000 -> Buy @ 4005, Buy @ 4100 -> Sell @ 4095)"
+#property version   "56.00"
+#property description "Break-Even Shield & Reversal Recovery Grid EA (Locks profit @ +$0.50 to eliminate reverse $500 losses)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,11 +15,15 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.11;     // Max Lot Limit (0.11) - 11 Levels (0.01 -> 0.11)
-input int      InpBaseGridStepPoints  = 200;      // Distance Between Main Levels (200 Points = 20 Pips)
+input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Levels
+input int      InpBaseGridStepPoints  = 200;      // Base Grid Distance (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpOffsetPoints        = 50;       // Paired Offset (50 Points = 5 Pips, e.g. 4000 -> 4005 / 4100 -> 4095)
-input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All Buy + Sell)
+input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
+
+input group "=== Break-Even Shield & Reversal Protection ==="
+input bool     InpEnableBreakEven     = true;     // Enable Break-Even Profit Shield
+input double   InpBETriggerUSD        = 0.50;     // Profit Level to Trigger Break-Even ($0.50)
+input double   InpBELockUSD           = 0.10;     // Minimum Profit to Lock-In ($0.10)
 
 input group "=== Risk Control & Drawdown Cap ==="
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
@@ -31,6 +35,7 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 
 //--- Global Variables
 CTrade         m_trade;
+double         m_peakBasketProfit;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -45,8 +50,9 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
+   m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] Paired Offset Hedging EA v55.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Break-Even Shield EA v56.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -77,10 +83,38 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // 3. GUARANTEED NET BASKET PROFIT EXIT (ALL BUY + SELL POSITIONS & PENDINGS)
+   // Track Peak Profit
+   if(totalOpenPositions == 0)
+   {
+      m_peakBasketProfit = 0.0;
+   }
+   else
+   {
+      if(totalProfitUSD > m_peakBasketProfit)
+      {
+         m_peakBasketProfit = totalProfitUSD;
+      }
+   }
+
+   // 3. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
+   if(InpEnableBreakEven && totalOpenPositions > 0 && m_peakBasketProfit >= InpBETriggerUSD)
+   {
+      // If profit peaked at >= $0.50 and drops back down to <= $0.10, CLOSE ALL IMMEDIATELY!
+      if(totalProfitUSD <= InpBELockUSD)
+      {
+         PrintFormat(">>> [BREAK-EVEN SHIELD EXIT] Profit dropped to $%.2f after peaking at $%.2f. Securing profit!", 
+                     totalProfitUSD, m_peakBasketProfit);
+         CloseAllPositionsGuaranteed();
+         DeleteAllPendingOrdersGuaranteed();
+         SetupProgressivePendingGrid();
+         return;
+      }
+   }
+
+   // 4. GUARANTEED TARGET PROFIT EXIT ($2.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
-      PrintFormat(">>> [NET BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
+      PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
                   totalProfitUSD, InpTargetProfitUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       DeleteAllPendingOrdersGuaranteed();
@@ -89,7 +123,7 @@ void OnTick()
       return;
    }
 
-   // 4. SETUP PAIRED OFFSET PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP DUAL 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -139,8 +173,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Paired Offset Pending Grid                                 |
-//| (Sell @ 4000 -> Buy @ 4005 | Buy @ 4100 -> Sell @ 4095)           |
+//| Setup Dual 10-Level Pending Grid                                 |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -158,7 +191,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 11; // 11 Levels (0.01 to 0.11 Lot)
+   int stepCount = 10; // 10 Levels (0.01 to 0.10 Lot)
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
@@ -166,36 +199,23 @@ void SetupProgressivePendingGrid()
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
    double currentStepDistance = InpBaseGridStepPoints * point;
-   double offsetDist = InpOffsetPoints * point; // 50 points = 5 pips
 
    for(int i = 1; i <= stepCount; i++)
    {
       double lot = NormalizeLot(startLot + (i - 1) * lotStep);
 
-      // --- Upper Grid Level (Example: Buy Stop @ 4100 -> Sell Stop @ 4095) ---
+      // --- Buy Stop Grid (Upper) ---
       double mainBuyPrice = NormalizeDouble(buyBasePrice + cumulativeBuyOffset, _Digits);
-      double pairedSellPrice = NormalizeDouble(mainBuyPrice - offsetDist, _Digits);
-
       if(mainBuyPrice > ask + stopLevel * point)
       {
          PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, mainBuyPrice, StringFormat("BuyStop #%d", i));
       }
-      if(pairedSellPrice < bid - stopLevel * point && pairedSellPrice > 0)
-      {
-         PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, pairedSellPrice, StringFormat("PairedSell #%d", i));
-      }
 
-      // --- Lower Grid Level (Example: Sell Stop @ 4000 -> Buy Stop @ 4005) ---
+      // --- Sell Stop Grid (Lower) ---
       double mainSellPrice = NormalizeDouble(sellBasePrice - cumulativeSellOffset, _Digits);
-      double pairedBuyPrice = NormalizeDouble(mainSellPrice + offsetDist, _Digits);
-
       if(mainSellPrice < bid - stopLevel * point)
       {
          PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, mainSellPrice, StringFormat("SellStop #%d", i));
-      }
-      if(pairedBuyPrice > ask + stopLevel * point)
-      {
-         PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, pairedBuyPrice, StringFormat("PairedBuy #%d", i));
       }
 
       cumulativeBuyOffset += currentStepDistance;
