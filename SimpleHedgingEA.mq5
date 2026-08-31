@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Paced Anti-Spam On-Demand Dynamic Recovery EA      |
+//| Description: Weighted Counter-Grid Recovery EA (1.5x Volume)    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "67.00"
-#property description "Paced Anti-Spam On-Demand Dynamic Recovery EA (Places 1 Order Per Tick - 100% MT5 Compliant Zero Block Errors)"
+#property version   "68.00"
+#property description "Weighted Counter-Grid Recovery EA (1.5x Volume Multiplier to Guarantee Profit Extraction and Prevent Equal-Volume Locks)"
 
 #include <Trade\Trade.mqh>
 
@@ -15,7 +15,7 @@
 input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Orders per Direction
+input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplier (1.5x)
 input int      InpBaseGridStepPoints  = 200;      // Grid Distance Between Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips)
@@ -57,12 +57,9 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
    
-   m_buyGridPlacedCount = 0;
-   m_sellGridPlacedCount = 0;
-   m_buyCounterPlacedCount = 0;
-   m_sellCounterPlacedCount = 0;
+   ResetCounters();
 
-   PrintFormat("[INIT] Paced Anti-Spam Grid EA v67.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Weighted Counter-Grid EA v68.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -96,11 +93,7 @@ void OnTick()
    // Reset tracking counters when no positions and no pendings exist
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
-      m_peakBasketProfit = 0.0;
-      m_buyGridPlacedCount = 0;
-      m_sellGridPlacedCount = 0;
-      m_buyCounterPlacedCount = 0;
-      m_sellCounterPlacedCount = 0;
+      ResetCounters();
    }
    else
    {
@@ -142,15 +135,15 @@ void OnTick()
       return;
    }
 
-   // 6. PACED ON-DEMAND COUNTER HEDGE PLACEMENT (1 Order Per Tick Max)
+   // 6. PACED WEIGHTED COUNTER HEDGE PLACEMENT (1.5x Lot Multiplier, 1 Order Per Tick Max)
    if(totalOpenPositions > 0)
    {
-      ManagePacedCounterHedges(buyCount, sellCount);
+      ManagePacedWeightedCounterHedges(buyCount, sellCount);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Reset Paced Placement Counters                                   |
+//| Reset Placement Counters                                         |
 //+------------------------------------------------------------------+
 void ResetCounters()
 {
@@ -201,7 +194,7 @@ void SetupPacedInitialGrid()
       {
          m_buyGridPlacedCount++;
       }
-      return; // 1 Order per tick!
+      return;
    }
 
    // Place 1 Sell Stop per tick
@@ -223,14 +216,14 @@ void SetupPacedInitialGrid()
       {
          m_sellGridPlacedCount++;
       }
-      return; // 1 Order per tick!
+      return;
    }
 }
 
 //+------------------------------------------------------------------+
-//| Manage Paced Counter Hedges (1 Order Per Tick)                   |
+//| Manage Paced Weighted Counter Hedges (1.5x Volume Multiplier)     |
 //+------------------------------------------------------------------+
-void ManagePacedCounterHedges(int buyCount, int sellCount)
+void ManagePacedWeightedCounterHedges(int buyCount, int sellCount)
 {
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -241,21 +234,23 @@ void ManagePacedCounterHedges(int buyCount, int sellCount)
    double startLot = 0.01;
    double lotStep = 0.01;
 
-   // 1. Buy triggered -> Place 10 Counter Sell Stops (1 per tick)
+   // 1. Buy triggered -> Place 10 Weighted Counter Sell Stops (1.5x Volume)
    if(buyCount > 0 && m_sellCounterPlacedCount < 10)
    {
       double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
       if(firstBuyPrice > 0)
       {
          int i = m_sellCounterPlacedCount + 1;
-         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+         double baseLot = startLot + (i - 1) * lotStep;
+         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
+
          double sellBasePrice = firstBuyPrice - hedgeGap;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
          if(price < bid - stopLevel * point && price > 0)
          {
-            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("CounterSell #%d", i)))
+            if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, weightedLot, price, StringFormat("CounterSell #%d", i)))
             {
                m_sellCounterPlacedCount++;
             }
@@ -265,24 +260,26 @@ void ManagePacedCounterHedges(int buyCount, int sellCount)
             m_sellCounterPlacedCount++;
          }
       }
-      return; // 1 Order per tick!
+      return;
    }
 
-   // 2. Sell triggered -> Place 10 Counter Buy Stops (1 per tick)
+   // 2. Sell triggered -> Place 10 Weighted Counter Buy Stops (1.5x Volume)
    if(sellCount > 0 && m_buyCounterPlacedCount < 10)
    {
       double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
       if(firstSellPrice > 0)
       {
          int i = m_buyCounterPlacedCount + 1;
-         double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+         double baseLot = startLot + (i - 1) * lotStep;
+         double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
+
          double buyBasePrice = firstSellPrice + hedgeGap;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
          if(price > ask + stopLevel * point)
          {
-            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("CounterBuy #%d", i)))
+            if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, weightedLot, price, StringFormat("CounterBuy #%d", i)))
             {
                m_buyCounterPlacedCount++;
             }
@@ -292,7 +289,7 @@ void ManagePacedCounterHedges(int buyCount, int sellCount)
             m_buyCounterPlacedCount++;
          }
       }
-      return; // 1 Order per tick!
+      return;
    }
 }
 
