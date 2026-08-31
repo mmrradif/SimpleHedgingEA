@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Fixed Refill & Anti-Stacking Grid EA               |
+//| Description: 6-Cycle Volume Capacity Dual Grid EA                |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "134.00"
-#property description "Fixed Refill EA: Caps total active grid to 11 levels and 0.55 max lot to prevent infinite 0.11 lot stacking during spikes ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "135.00"
+#property description "6-Cycle Capacity EA: Allows up to 6 full 0.01->0.11 lot cycles (3.96 Lots max volume cap) for continuous trading while keeping target at $0.50/0.01 lot ($5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -38,7 +38,7 @@ input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
 input int      InpReversalOffsetPoints = 200;     // Reversal Pending Offset (200 Points = 20 Pips Offset)
-input double   InpMaxTotalVolumeCapLot = 0.66;    // Hard Total Volume Cap (0.66 Lot Max across all trades)
+input double   InpMaxTotalVolumeCapLot = 3.96;    // Hard Total Volume Cap (3.96 Lots = 6 Full Cycles Cap)
 
 input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
@@ -80,7 +80,7 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Fixed Refill Anti-Stacking EA v134.0 Initialized. Volume Cap: %.2f Lot, Max DD: $%.2f", 
+   PrintFormat("[INIT] 6-Cycle Capacity Dual Grid EA v135.0 Initialized. Volume Cap: %.2f Lots (6 Cycles), Max DD: $%.2f", 
                InpMaxTotalVolumeCapLot, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -135,7 +135,7 @@ void OnTick()
       return;
    }
 
-   // 5. SAFE CONTROLLED REFILL (Capped to prevent infinite 0.11 lot stacking)
+   // 5. CONTINUOUS REFILL CONTROLLED UP TO 6 FULL CYCLES (3.96 LOTS CAP)
    if((!InpUseTimeWindow || IsWithinBDTradingHours()) && totalLot < InpMaxTotalVolumeCapLot)
    {
       RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
@@ -165,7 +165,7 @@ int GetTrendDirection()
 }
 
 //+------------------------------------------------------------------+
-//| Refill Missing Pending Stops safely without volume stacking      |
+//| Refill Missing Pending Stops up to 6 Full Cycles                 |
 //+------------------------------------------------------------------+
 void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, double currentTotalLot)
 {
@@ -184,7 +184,7 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
    double buyBasePrice = (trendDir >= 0) ? MathMax(m1High, ask + (stopLevel + 15) * point) : MathMax(ask + (stopLevel + 15) * point, bid + (InpReversalOffsetPoints + 15) * point);
    double sellBasePrice = (trendDir >= 0) ? MathMin(buyBasePrice - InpReversalOffsetPoints * point, bid - (stopLevel + 15) * point) : MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Refill BuyStops if less than 11 active and within volume cap
+   // Refill BuyStops if less than 11 active and within 6-cycle cap
    if(activeBuyStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeBuyStops + 1;
@@ -199,11 +199,10 @@ void RefillMissingPendingStopsPaced(int activeBuyStops, int activeSellStops, dou
       return; // 1 Order per tick!
    }
 
-   // Refill SellStops if less than 11 active and within volume cap
+   // Refill SellStops if less than 11 active and within 6-cycle cap
    if(activeSellStops < InpMaxGridLevels && currentTotalLot < InpMaxTotalVolumeCapLot)
    {
       int levelIndex = activeSellStops + 1;
-      // Normal 0.01 -> 0.11 lot progression to prevent infinite 0.11 lot stacking!
       double lot = NormalizeLot(InpStartLot + (levelIndex - 1) * InpLotStep);
       double cumulativeOffset = (levelIndex - 1) * InpBaseGridStepPoints * point;
       double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
