@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Guaranteed Pending Order Placement Grid EA          |
+//| Description: January Volatility Protected Grid EA                |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "41.00"
-#property description "Guaranteed Pending Order Placement Grid EA (Multi-Filling Fallback for 100% Placement Success)"
+#property version   "42.00"
+#property description "January Volatility Shield Grid EA (Wide 35-Pip Spacing & Breakeven Rescue Exit)"
 
 #include <Trade\Trade.mqh>
 
@@ -16,11 +16,12 @@ input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - Exactly 10 Orders
-input int      InpBaseGridStepPoints  = 250;      // Distance Between Levels (250 Points = 25 Pips)
-input double   InpSpacingMultiplier   = 1.20;     // Distance Multiplier (Levels Sit Farther Apart)
-input double   InpTargetProfitUSD     = 2.00;     // Fast Target Net Profit ($2.00 Instant Close All)
+input int      InpBaseGridStepPoints  = 350;      // Volatility Safe Step (350 Points = 35 Pips)
+input double   InpSpacingMultiplier   = 1.25;     // Progressive Multiplier (Levels Sit Farther Apart)
+input double   InpTargetProfitUSD     = 2.00;     // Normal Target Net Profit ($2.00 Close All)
+input double   InpRescueProfitUSD     = 1.00;     // Breakeven Rescue Profit for 5+ Trades ($1.00 Exit)
 
-input group "=== Real-Tick & Risk Control ==="
+input group "=== Volatility & Risk Control ==="
 input bool     InpStrictDirectionLock = true;     // Single-Direction Lock (Prevents Dual Buy/Sell Traps)
 input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
@@ -46,8 +47,8 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] Guaranteed Grid EA v41.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
-               InpTargetProfitUSD, InpMaxDrawdownUSD);
+   PrintFormat("[INIT] January Volatility Shield EA v42.0 Initialized. Step: %d pts, Target: $%.2f, Max DD: $%.2f", 
+               InpBaseGridStepPoints, InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -90,11 +91,17 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED FAST PROFIT EXIT ($2.00 TARGET)
-   if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
+   // 4. DYNAMIC TARGET EXIT (Breakeven Rescue Exit for Volatile Accumulations)
+   double dynamicTargetUSD = InpTargetProfitUSD;
+   if(totalOpenPositions >= 5)
    {
-      PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f. Closing all positions...", 
-                  totalProfitUSD, InpTargetProfitUSD);
+      dynamicTargetUSD = InpRescueProfitUSD; // Lower target to $1.00 when 5+ trades open for quick exit
+   }
+
+   if(totalOpenPositions > 0 && totalProfitUSD >= dynamicTargetUSD)
+   {
+      PrintFormat(">>> [BASKET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
+                  totalProfitUSD, dynamicTargetUSD, totalOpenPositions);
       CloseAllPositionsGuaranteed();
       DeleteAllPendingOrdersGuaranteed();
       
@@ -102,7 +109,7 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP INSTANT 10-ORDER PENDING GRID (When no positions and no pendings exist)
+   // 5. SETUP VOLATILITY SAFE 10-ORDER PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
@@ -174,8 +181,8 @@ void SetupProgressivePendingGrid()
    double lotStep = 0.01;
    int stepCount = 10;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 25) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 25) * point);
+   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 35) * point);
+   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 35) * point);
 
    double cumulativeBuyOffset = 0;
    double cumulativeSellOffset = 0;
@@ -189,7 +196,7 @@ void SetupProgressivePendingGrid()
 
       if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, "BuyStop 0.01-0.10"))
       {
-         PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed successfully.", i, lot, price);
+         PrintFormat("[BUY STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
 
       cumulativeBuyOffset += currentStepDistance;
@@ -207,7 +214,7 @@ void SetupProgressivePendingGrid()
 
       if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, "SellStop 0.01-0.10"))
       {
-         PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed successfully.", i, lot, price);
+         PrintFormat("[SELL STOP %d] Lot %.2f @ %.5f placed.", i, lot, price);
       }
 
       cumulativeSellOffset += currentStepDistance;
