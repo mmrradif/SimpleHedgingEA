@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Restored 20-Pip Spacing Master Grid EA             |
+//| Description: Bulletproof Server Time Window EA (08:00-20:00 BD) |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "139.00"
-#property description "Restored 20-Pip Spacing Master EA: Exact 20 pips gap between all orders, inverted lot sequence (0.11 -> 0.01) for refills, BD 08:00 AM - 08:00 PM schedule ($0.50/0.01 lot target, $5000 Max DD)"
+#property version   "140.00"
+#property description "Bulletproof Time Window EA: Trades strictly between 05:00-17:00 Broker Server Time (08:00 AM - 08:00 PM BD Time). Deletes all pendings and closes profit clean at 08:00 PM BD Time ($0.50/0.01 lot target, $5000 Max DD)"
 
 #include <Trade\Trade.mqh>
 
@@ -44,12 +44,10 @@ input group "=== Total Max Drawdown Protection ==="
 input double   InpMaxAllowedDrawdownUSD = 5000.0; // Total Account Maximum USD Drawdown ($5000.00)
 input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
 
-input group "=== BD Time Schedule & EOD Liquidation ==="
-input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter (True for BD Time Window)
-input int      InpBDStartHour         = 8;        // Start Trading Hour (08:00 AM BD Time)
-input int      InpBDEndHour           = 20;       // End Trading Hour (08:00 PM BD Time / 20:00 BD Time)
-input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 minus Broker GMT+3 = 3 Hours)
-input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close AT 08:00 PM ONLY IF PROFITABLE / BREAKEVEN
+input group "=== Broker Server Time Schedule (BD 08:00 AM - 08:00 PM) ==="
+input bool     InpUseTimeWindow       = true;     // Enable Time Window Filter (True = BD 08:00 AM to 08:00 PM)
+input int      InpServerStartHour     = 5;        // Broker Server Start Hour (05:00 AM Server = 08:00 AM BD Time)
+input int      InpServerEndHour       = 17;       // Broker Server End Hour (17:00 PM Server = 08:00 PM BD Time / 20:00 BD)
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -81,8 +79,8 @@ int OnInit()
 
    ResetStateMachine();
 
-   PrintFormat("[INIT] Restored 20-Pip Spacing Master EA v139.0 Initialized. Step: %d Points (20 Pips), Max DD: $%.2f", 
-               InpBaseGridStepPoints, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Bulletproof Time Window EA v140.0 Initialized. Server Window: %02d:00-%02d:00 (BD 08:00-20:00), Max DD: $%.2f", 
+               InpServerStartHour, InpServerEndHour, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -136,64 +134,56 @@ void OnTick()
       return;
    }
 
-   // 5. BANGLADESH TIME NIGHT EOD CLEAN CLOSE AT 08:00 PM (20:00 BD Time)
-   if(InpUseTimeWindow && IsEODCloseTime())
+   // 5. BULLETPROOF TIME WINDOW CONTROL
+   bool insideTradingWindow = IsInsideServerTradingWindow();
+
+   // OUTSIDE TRADING HOURS (Night / Outside BD 08:00 AM - 08:00 PM):
+   if(InpUseTimeWindow && !insideTradingWindow)
    {
-      if(totalOpenPositions > 0 && totalProfitUSD >= 0.0) // ONLY IF PROFITABLE OR BREAKEVEN
+      // A. Delete ALL pending orders immediately so no pending hangs overnight!
+      if(totalPendingOrders > 0)
       {
-         PrintFormat(">>> [EOD NIGHT CLOSE 08:00 PM BD TIME] Net Profit $%.2f. Closing all positions & pendings clean...", totalProfitUSD);
+         PrintFormat(">>> [TIME WINDOW CLOSED] Server Hour outside %02d:00-%02d:00. Deleting all %d pending orders...", 
+                     InpServerStartHour, InpServerEndHour, totalPendingOrders);
+         DeleteAllPendingOrdersGuaranteed();
+      }
+
+      // B. If open positions exist and net profit is breakeven/positive, close clean!
+      if(totalOpenPositions > 0 && totalProfitUSD >= 0.0)
+      {
+         PrintFormat(">>> [TIME WINDOW NIGHT CLOSE] Profit $%.2f >= $0.00. Closing all positions clean for the night...", totalProfitUSD);
          CloseAllPositionsGuaranteed();
-         DeleteAllPendingOrdersGuaranteed();
          ResetStateMachine();
-         return;
       }
-      else if(totalOpenPositions == 0 && totalPendingOrders > 0)
-      {
-         DeleteAllPendingOrdersGuaranteed();
-         return;
-      }
+
+      return; // Do NOT place or refill any new trades outside trading window!
    }
 
-   // 6. CONTINUOUS INVERTED REFILL CONTROLLED WITHIN BD TRADING HOURS (08:00 AM - 08:00 PM BD TIME)
-   if((!InpUseTimeWindow || IsWithinBDTradingHours()) && totalLot < InpMaxTotalVolumeCapLot)
+   // 6. INSIDE TRADING HOURS (BD 08:00 AM - 08:00 PM): CONTINUOUS REFILL
+   if(insideTradingWindow && totalLot < InpMaxTotalVolumeCapLot)
    {
       RefillMissingPendingStopsPaced(buyStopCount, sellStopCount, totalLot);
    }
-   else if(InpUseTimeWindow && !IsWithinBDTradingHours() && totalOpenPositions == 0 && totalPendingOrders > 0)
-   {
-      // Delete all pendings outside BD trading hours so no pending hangs overnight
-      DeleteAllPendingOrdersGuaranteed();
-   }
 }
 
 //+------------------------------------------------------------------+
-//| Check if current BD time is EOD Liquidation Time (20:00 BD Time) |
+//| Check if current Broker Server time is inside Trading Window     |
+//| (05:00 AM to 17:00 PM Server Time = 08:00 AM to 20:00 PM BD Time)|
 //+------------------------------------------------------------------+
-bool IsEODCloseTime()
+bool IsInsideServerTradingWindow()
 {
+   if(!InpUseTimeWindow) return true;
+
    MqlDateTime dt;
-   TimeCurrent(dt);
-   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
-   return (bdHour >= 20 && dt.min >= 0);
-}
+   TimeCurrent(dt); // Returns Broker Server Time
 
-//+------------------------------------------------------------------+
-//| Convert Broker Time to BD Time & Check Hours (08:00 AM - 20:00 PM)|
-//+------------------------------------------------------------------+
-bool IsWithinBDTradingHours()
-{
-   MqlDateTime dt;
-   TimeCurrent(dt);
-
-   int bdHour = (dt.hour + InpBDtoServerDiffHours) % 24;
-
-   if(InpBDStartHour <= InpBDEndHour)
+   if(InpServerStartHour <= InpServerEndHour)
    {
-      return (bdHour >= InpBDStartHour && bdHour < InpBDEndHour);
+      return (dt.hour >= InpServerStartHour && dt.hour < InpServerEndHour);
    }
    else
    {
-      return (bdHour >= InpBDStartHour || bdHour < InpBDEndHour);
+      return (dt.hour >= InpServerStartHour || dt.hour < InpServerEndHour);
    }
 }
 
