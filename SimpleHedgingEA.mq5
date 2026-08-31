@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Dynamic Proportional Exit EA (Prevents Single Trade Hang)|
+//| Description: Adaptive Low Drawdown Dual Grid EA                  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "109.00"
-#property description "Dynamic Proportional Profit Exit EA: Scales target profit per active lot (0.01 lot closes at $0.50 profit) preventing single trades from hanging"
+#property version   "110.00"
+#property description "Adaptive Low Drawdown EA: Configurable Max Grid Levels (3-11), Max USD Drawdown ($100), and Percent DD Cap (20%) to easily reduce or adjust drawdown"
 
 #include <Trade\Trade.mqh>
 
@@ -25,14 +25,15 @@ enum ENUM_GRID_STATE
 //--- Input Parameters
 input group "=== Grid & Lot Settings ==="
 input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
+input int      InpMaxGridLevels       = 11;       // Max Allowed Grid Levels (1-11 Levels, reduce to 3-5 for Ultra Low DD)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
-input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
+input int      InpBaseGridStepPoints  = 200;      // Base Grid Step (200 Points = 20 Pips - Wider step reduces DD)
 
 input group "=== Profit & Loss Settings ==="
 input double   InpTargetProfitUSD     = 5.00;     // Full Grid Basket Target Profit ($5.00)
-input double   InpProfitPerLotUSD     = 50.0;     // Proportional Target Profit Per Lot ($50 per 1.0 lot = $0.50 per 0.01 lot)
-input double   InpMaxSideLossUSD      = 500.0;    // Per-Side Max Loss Cap ($500.00 Force Close Side)
+input double   InpProfitPerLotUSD     = 50.0;     // Proportional Target Profit Per Lot ($0.50 per 0.01 lot)
+input double   InpMaxSideLossUSD      = 100.0;    // Per-Side Max Loss Cap ($100.00 Force Close Side)
 
 input group "=== Bangladesh Time Schedule (GMT+6) ==="
 input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
@@ -41,10 +42,10 @@ input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM 
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 minus Broker GMT+3 = 3 Hours)
 input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close ONLY IF PROFITABLE (Never at a loss)
 
-input group "=== Risk Control & Drawdown Cap ==="
+input group "=== Drawdown Control & Equity Protection ==="
+input double   InpMaxAllowedDrawdownUSD = 100.0;  // Maximum Allowed Drawdown ($100.00 USD Cutoff)
+input double   InpMaxDrawdownPercent    = 20.0;   // Maximum Allowed Equity Drawdown (20.0%)
 input int      InpMaxSpreadPoints     = 50;       // Max Allowed Spread Filter (50 Points = 5 Pips Max Spread)
-input double   InpMaxAllowedDrawdownUSD = 500.0;  // Maximum Allowed Drawdown ($500.00 Max USD Loss)
-input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
 input bool     InpClosePendingsFriday   = true;   // Weekend Gap Guard (Friday 23:40 Pending Delete)
 
 input group "=== Expert Settings ==="
@@ -75,8 +76,8 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Dynamic Proportional Profit EA v109.0 Initialized. Max Loss: $%.2f", 
-               InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] Adaptive Low Drawdown EA v110.0 Initialized. Max Levels: %d, Max USD DD: $%.2f, Max DD %%: %.1f%%", 
+               InpMaxGridLevels, InpMaxAllowedDrawdownUSD, InpMaxDrawdownPercent);
    return(INIT_SUCCEEDED);
 }
 
@@ -184,7 +185,7 @@ void OnTick()
       m_gridState = GRID_STATE_ACTIVE;
    }
 
-   // 8. PER-SIDE MAX LOSS CAP (Force close side if loss exceeds $500)
+   // 8. PER-SIDE MAX LOSS CAP (Force close side if loss exceeds limit)
    if(InpMaxSideLossUSD > 0)
    {
       if(buyCount > 0 && buyProfitUSD <= -InpMaxSideLossUSD)
@@ -209,11 +210,7 @@ void OnTick()
       }
    }
 
-   // ------------------------------------------------------------------
-   // 9. DYNAMIC PROPORTIONAL PROFIT TARGET EXITS:
-   //    Prevents single small trades (0.01, 0.06 lot) from hanging!
-   //    Target scales with open lot size: 0.01 lot targets $0.50 profit!
-   // ------------------------------------------------------------------
+   // 9. DYNAMIC PROPORTIONAL PROFIT TARGET EXITS
    if(buyCount > 0)
    {
       double dynamicBuyTarget = MathMin(InpTargetProfitUSD, MathMax(0.50, totalBuyLot * InpProfitPerLotUSD));
@@ -267,10 +264,10 @@ void OnTick()
       }
    }
 
-   // 12. STATE: PACED PLACEMENT OF INITIAL 11 BUY STOPS & 11 SELL STOPS
+   // 12. STATE: PACED PLACEMENT OF INITIAL GRID (Configurable up to InpMaxGridLevels)
    if(m_gridState == GRID_STATE_PLACING_INITIAL)
    {
-      if(m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11)
+      if(m_buyGridPlacedCount < InpMaxGridLevels || m_sellGridPlacedCount < InpMaxGridLevels)
       {
          SetupPacedInitialDualGrid();
          return;
@@ -370,9 +367,7 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Exact M1 Zone Dual Grid                                    |
-//| BuyStops start EXACTLY AT m1High (M1 Resistance)                |
-//| SellStops start EXACTLY AT m1Low (M1 Support)                   |
+//| Setup Exact M1 Zone Dual Grid (Configurable up to InpMaxGridLevels) |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -391,11 +386,11 @@ void SetupPacedInitialDualGrid()
    // Sell Base starts EXACTLY at M1 Low
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
 
-   // Place 1 Buy Stop per tick starting EXACTLY at M1 High (0.01 to 0.11 Lot)
-   if(m_buyGridPlacedCount < 11)
+   // Place Buy Stops up to InpMaxGridLevels
+   if(m_buyGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_buyGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep); // 0.01, 0.02 ... 0.11
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
       double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
@@ -413,11 +408,11 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place 1 Sell Stop per tick starting EXACTLY at M1 Low (0.01 to 0.11 Lot)
-   if(m_sellGridPlacedCount < 11)
+   // Place Sell Stops up to InpMaxGridLevels
+   if(m_sellGridPlacedCount < InpMaxGridLevels)
    {
       int i = m_sellGridPlacedCount + 1;
-      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep); // 0.01, 0.02 ... 0.11
+      double lot = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
       double cumulativeOffset = (i - 1) * InpBaseGridStepPoints * point;
       double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
@@ -681,7 +676,7 @@ bool CheckEquityProtection()
       double floatingLossUSD = balance - equity;
       double drawdownPercent = (floatingLossUSD / balance) * 100.0;
 
-      // 1. Hard Max USD Drawdown Cap ($500.00)
+      // 1. Hard Max USD Drawdown Cap ($100.00 Default)
       if(InpMaxAllowedDrawdownUSD > 0 && floatingLossUSD >= InpMaxAllowedDrawdownUSD)
       {
          PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Instant liquidation...", 
@@ -692,7 +687,7 @@ bool CheckEquityProtection()
          return true;
       }
 
-      // 2. Hard Equity Percent Protection
+      // 2. Hard Equity Percent Protection (20.0% Default)
       if(drawdownPercent >= InpMaxDrawdownPercent)
       {
          PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
