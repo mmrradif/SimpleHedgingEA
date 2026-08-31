@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Break-Even Shield & Reversal Recovery Grid EA       |
+//| Description: Sleep-Free Guaranteed Execution Grid EA             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "56.00"
-#property description "Break-Even Shield & Reversal Recovery Grid EA (Locks profit @ +$0.50 to eliminate reverse $500 losses)"
+#property version   "57.00"
+#property description "Sleep-Free Guaranteed Execution Grid EA (Zero Sleep Loops, Instant Backtest Liquidation)"
 
 #include <Trade\Trade.mqh>
 
@@ -20,7 +20,7 @@ input int      InpBaseGridStepPoints  = 200;      // Base Grid Distance (200 Poi
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
 input double   InpTargetProfitUSD     = 2.00;     // Target Net Basket Profit ($2.00 Close All)
 
-input group "=== Break-Even Shield & Reversal Protection ==="
+input group "=== Break-Even Shield & Protection ==="
 input bool     InpEnableBreakEven     = true;     // Enable Break-Even Profit Shield
 input double   InpBETriggerUSD        = 0.50;     // Profit Level to Trigger Break-Even ($0.50)
 input double   InpBELockUSD           = 0.10;     // Minimum Profit to Lock-In ($0.10)
@@ -52,7 +52,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] Break-Even Shield EA v56.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] Sleep-Free Grid EA v57.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -281,13 +281,13 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE orderType)
 }
 
 //+------------------------------------------------------------------+
-//| Bulletproof Position Close with Multi-Filling Fallback           |
+//| Bulletproof Position Close (NO SLEEP LOOPS!)                     |
 //+------------------------------------------------------------------+
 bool CloseAllPositionsGuaranteed()
 {
    ENUM_ORDER_TYPE_FILLING fillings[] = {ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN};
 
-   for(int retry = 0; retry < 15; retry++)
+   for(int retry = 0; retry < 5; retry++)
    {
       ulong tickets[];
       int count = 0;
@@ -335,18 +335,16 @@ bool CloseAllPositionsGuaranteed()
             }
          }
       }
-
-      Sleep(50);
    }
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| Bulletproof Pending Order Deletion with Retry                    |
+//| Bulletproof Pending Order Deletion (NO SLEEP LOOPS!)             |
 //+------------------------------------------------------------------+
 bool DeleteAllPendingOrdersGuaranteed()
 {
-   for(int retry = 0; retry < 15; retry++)
+   for(int retry = 0; retry < 5; retry++)
    {
       ulong tickets[];
       int count = 0;
@@ -368,8 +366,6 @@ bool DeleteAllPendingOrdersGuaranteed()
       {
          m_trade.OrderDelete(tickets[k]);
       }
-
-      Sleep(50);
    }
    return false;
 }
