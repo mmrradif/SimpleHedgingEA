@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Original Dual Zone Grid EA (Target $5, Loss $500)  |
+//| Description: Direct Ask/Bid Price Dual Grid EA (No High/Low Scan)|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "98.00"
-#property description "Original Dual Zone EA: 11 BuyStops in Buy Zone & 11 SellStops in Sell Zone (Target $5.00, Max Loss $500.00)"
+#property version   "99.00"
+#property description "Direct Price Dual Grid EA: 11 BuyStops directly above Ask & 11 SellStops directly below Bid (No High/Low Scan, Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -75,7 +75,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Original Dual Zone EA v98.0 Initialized (11 BuyStops & 11 SellStops). Target: $%.2f, Max Loss: $%.2f", 
+   PrintFormat("[INIT] Direct Price Dual Grid EA v99.0 Initialized (No High/Low Scan). Target: $%.2f, Max Loss: $%.2f", 
                InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -350,13 +350,10 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Paced Initial Dual Grid (Original Buy Zone & Sell Zone)    |
+//| Setup Direct Price Dual Grid (No High/Low Scan)                  |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
-   double m1High = 0, m1Low = 0;
-   FindM1ZoneSafe(30, m1High, m1Low);
-
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -364,10 +361,11 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
-   double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
+   // Direct price offset starting level
+   double buyBasePrice = ask + (stopLevel + 15) * point;
+   double sellBasePrice = bid - (stopLevel + 15) * point;
 
-   // Place 1 Buy Stop per tick in Buy Zone (0.01 to 0.11 Lot)
+   // Place 1 Buy Stop per tick directly above Ask (0.01 to 0.11 Lot)
    if(m_buyGridPlacedCount < 11)
    {
       int i = m_buyGridPlacedCount + 1;
@@ -389,7 +387,7 @@ void SetupPacedInitialDualGrid()
       return; // 1 Order per tick!
    }
 
-   // Place 1 Sell Stop per tick in Sell Zone (0.01 to 0.11 Lot)
+   // Place 1 Sell Stop per tick directly below Bid (0.01 to 0.11 Lot)
    if(m_sellGridPlacedCount < 11)
    {
       int i = m_sellGridPlacedCount + 1;
@@ -452,44 +450,6 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
       }
    }
    return false;
-}
-
-//+------------------------------------------------------------------+
-//| Find M1 Support and Resistance Zone                              |
-//+------------------------------------------------------------------+
-void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
-{
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-
-   m1High = ask + (40 * point);
-   m1Low = bid - (40 * point);
-
-   if(lookback <= 0) return;
-
-   double highArray[];
-   double lowArray[];
-   ArraySetAsSeries(highArray, true);
-   ArraySetAsSeries(lowArray, true);
-
-   int copiedHigh = CopyHigh(_Symbol, PERIOD_M1, 1, lookback, highArray);
-   int copiedLow = CopyLow(_Symbol, PERIOD_M1, 1, lookback, lowArray);
-
-   if(copiedHigh > 0 && copiedLow > 0)
-   {
-      m1High = highArray[0];
-      m1Low = lowArray[0];
-
-      for(int i = 1; i < copiedHigh; i++)
-      {
-         if(highArray[i] > m1High) m1High = highArray[i];
-      }
-      for(int i = 1; i < copiedLow; i++)
-      {
-         if(lowArray[i] < m1Low) m1Low = lowArray[i];
-      }
-   }
 }
 
 //+------------------------------------------------------------------+
