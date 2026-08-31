@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Dynamic Level-Based Fast Profit Grid EA             |
+//| Description: Ultra-Fast Micro Profit Grid EA                     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "46.00"
-#property description "Level-Based Fast Profit Grid EA (0.01: $0.50, 0.02: $1.00, 3-5: $2.00 - No Trailing Truncation)"
+#property version   "47.00"
+#property description "Ultra-Fast Micro Profit Grid EA (0.01: $0.20, 0.02: $0.40, 3-5: $1.00, 6+: $0.50)"
 
 #include <Trade\Trade.mqh>
 
@@ -45,7 +45,7 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   PrintFormat("[INIT] Level-Based Grid EA v46.0 Initialized. Max DD Limit: $%.2f", InpMaxDrawdownUSD);
+   PrintFormat("[INIT] Ultra-Fast Micro Profit Grid EA v47.0 Initialized. Max DD Limit: $%.2f", InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -58,14 +58,14 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Dynamic Profit Target Calculator Based on Open Trade Count      |
+//| Ultra-Fast Micro Profit Target Calculator                        |
 //+------------------------------------------------------------------+
 double GetTargetProfitForCount(int tradeCount)
 {
-   if(tradeCount == 1) return 0.50; // 0.01 lot requires only 5 pips to close ($0.50) -> NEVER HANGS!
-   if(tradeCount == 2) return 1.00; // 0.01+0.02 lot requires only 3.3 pips ($1.00) -> NEVER HANGS!
-   if(tradeCount >= 3 && tradeCount <= 5) return 2.00; // 3-5 trades exit in $2.00 profit
-   return 1.00; // 6+ trades quick break-even rescue exit ($1.00)
+   if(tradeCount == 1) return 0.20; // 0.01 lot requires only 2 pips to close ($0.20) -> INSTANT EXIT!
+   if(tradeCount == 2) return 0.40; // 0.01+0.02 lot requires only 1.3 pips ($0.40) -> INSTANT EXIT!
+   if(tradeCount >= 3 && tradeCount <= 5) return 1.00; // 3-5 trades exit at $1.00 profit
+   return 0.50; // 6+ trades exit at $0.50 quick break-even rescue
 }
 
 //+------------------------------------------------------------------+
@@ -99,14 +99,14 @@ void OnTick()
       }
    }
 
-   // 4. LEVEL-BASED FAST PROFIT EXIT (0.01: $0.50, 0.02: $1.00, 3-5: $2.00)
+   // 4. ULTRA-FAST MICRO PROFIT EXIT (0.01: $0.20, 0.02: $0.40, 3-5: $1.00, 6+: $0.50)
    if(totalOpenPositions > 0)
    {
       double requiredTargetUSD = GetTargetProfitForCount(totalOpenPositions);
       
       if(totalProfitUSD >= requiredTargetUSD)
       {
-         PrintFormat(">>> [PROFIT HIT!] Trades: %d, Profit: $%.2f >= $%.2f. Closing positions...", 
+         PrintFormat(">>> [MICRO PROFIT HIT!] Trades: %d, Profit: $%.2f >= $%.2f. Closing positions...", 
                      totalOpenPositions, totalProfitUSD, requiredTargetUSD);
          CloseAllPositionsGuaranteed();
          DeleteAllPendingOrdersGuaranteed();
