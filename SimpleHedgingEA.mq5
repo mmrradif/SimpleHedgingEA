@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Clean Anti-Spam Dual Grid EA (Zero MT5 Stop Errors) |
+//| Description: On-Demand Dynamic Counter-Recovery Grid EA         |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "64.00"
-#property description "Clean Anti-Spam Dual Grid EA (20 Orders Max per Initialization - Zero MT5 Tester Block Errors)"
+#property version   "65.00"
+#property description "On-Demand Dynamic Counter-Recovery Grid EA (Places Counter Pendings 20 Pips Away Only When a Trade Triggers)"
 
 #include <Trade\Trade.mqh>
 
@@ -18,6 +18,7 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpMaxLotLimit         = 0.10;     // Max Lot Limit (0.10) - 10 Orders per Direction
 input int      InpBaseGridStepPoints  = 200;      // Grid Distance Between Levels (200 Points = 20 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
+input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips)
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Break-Even Shield & Protection ==="
@@ -52,7 +53,7 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
 
-   PrintFormat("[INIT] Clean Anti-Spam Grid EA v64.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] On-Demand Dynamic Recovery Grid EA v65.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -96,7 +97,13 @@ void OnTick()
       }
    }
 
-   // 3. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
+   // 3. ON-DEMAND DYNAMIC COUNTER-HEDGE PLACEMENT (Places counter pendings 20 pips away on trade trigger)
+   if(totalOpenPositions > 0)
+   {
+      ManageOnDemandCounterHedges();
+   }
+
+   // 4. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
    if(InpEnableBreakEven && totalOpenPositions > 0 && m_peakBasketProfit >= InpBETriggerUSD)
    {
       if(totalProfitUSD <= InpBELockUSD)
@@ -110,7 +117,7 @@ void OnTick()
       }
    }
 
-   // 4. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
+   // 5. GUARANTEED TARGET PROFIT EXIT ($5.00 TARGET)
    if(totalOpenPositions > 0 && totalProfitUSD >= InpTargetProfitUSD)
    {
       PrintFormat(">>> [NET PROFIT HIT!] Profit: $%.2f >= $%.2f (Trades: %d). Closing all positions...", 
@@ -122,11 +129,75 @@ void OnTick()
       return;
    }
 
-   // 5. SETUP CLEAN ANTI-SPAM PENDING GRID (When no positions and no pendings exist)
+   // 6. SETUP CLEAN INITIAL PENDING GRID (When no positions and no pendings exist)
    if(totalOpenPositions == 0 && totalPendingOrders == 0)
    {
       SetupProgressivePendingGrid();
    }
+}
+
+//+------------------------------------------------------------------+
+//| On-Demand Dynamic Counter-Hedge Manager                          |
+//+------------------------------------------------------------------+
+void ManageOnDemandCounterHedges()
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double hedgeGap = InpDynamicHedgeGapPts * point; // 200 points = 20 pips
+
+   // Loop over open positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+      {
+         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         double volume = PositionGetDouble(POSITION_VOLUME);
+
+         if(posType == POSITION_TYPE_BUY)
+         {
+            // Buy triggered -> Check if counter Sell Stop 20 pips below openPrice already exists
+            double targetSellPrice = NormalizeDouble(openPrice - hedgeGap, _Digits);
+            if(targetSellPrice < bid - stopLevel * point && !PendingOrderExistsAtPrice(ORDER_TYPE_SELL_STOP, targetSellPrice))
+            {
+               PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, volume, targetSellPrice, "OnDemandSellHedge");
+            }
+         }
+         else if(posType == POSITION_TYPE_SELL)
+         {
+            // Sell triggered -> Check if counter Buy Stop 20 pips above openPrice already exists
+            double targetBuyPrice = NormalizeDouble(openPrice + hedgeGap, _Digits);
+            if(targetBuyPrice > ask + stopLevel * point && !PendingOrderExistsAtPrice(ORDER_TYPE_BUY_STOP, targetBuyPrice))
+            {
+               PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, volume, targetBuyPrice, "OnDemandBuyHedge");
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if Pending Order Exists Near Target Price                  |
+//+------------------------------------------------------------------+
+bool PendingOrderExistsAtPrice(ENUM_ORDER_TYPE orderType, double targetPrice)
+{
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+      {
+         if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE) == orderType)
+         {
+            double price = OrderGetDouble(ORDER_PRICE_OPEN);
+            if(MathAbs(price - targetPrice) <= 30 * point) return true;
+         }
+      }
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -172,7 +243,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Setup Clean Anti-Spam Dual Grid (10 BuyStops & 10 SellStops)      |
+//| Setup Clean Initial Dual Grid (10 BuyStops & 10 SellStops)        |
 //+------------------------------------------------------------------+
 void SetupProgressivePendingGrid()
 {
@@ -190,7 +261,7 @@ void SetupProgressivePendingGrid()
 
    double startLot = 0.01;
    double lotStep = 0.01;
-   int stepCount = 10; // Exactly 10 Orders per direction (20 total)
+   int stepCount = 10; // Exactly 10 Orders per direction (20 total clean orders)
 
    double buyBasePrice = MathMax(m1High, ask + (stopLevel + 15) * point);
    double sellBasePrice = MathMin(m1Low, bid - (stopLevel + 15) * point);
