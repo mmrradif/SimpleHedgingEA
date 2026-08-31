@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: On-Demand Dynamic Counter-Recovery Grid EA         |
+//| Description: 10-Order On-Demand Counter-Recovery Grid EA        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "65.00"
-#property description "On-Demand Dynamic Counter-Recovery Grid EA (Places Counter Pendings 20 Pips Away Only When a Trade Triggers)"
+#property version   "66.00"
+#property description "10-Order On-Demand Counter-Recovery Grid EA (Places 10 Counter Pendings 20 Pips Away When a Trade Triggers)"
 
 #include <Trade\Trade.mqh>
 
@@ -37,6 +37,8 @@ input ulong    InpSlippage            = 30;       // Max Slippage (Points)
 //--- Global Variables
 CTrade         m_trade;
 double         m_peakBasketProfit;
+bool           m_buyCounterPlaced;
+bool           m_sellCounterPlaced;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -52,8 +54,10 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
    m_peakBasketProfit = 0.0;
+   m_buyCounterPlaced = false;
+   m_sellCounterPlaced = false;
 
-   PrintFormat("[INIT] On-Demand Dynamic Recovery Grid EA v65.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 10-Order On-Demand Recovery EA v66.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -84,10 +88,12 @@ void OnTick()
    int totalOpenPositions = buyCount + sellCount;
    int totalPendingOrders = buyStopCount + sellStopCount;
 
-   // Track Peak Profit
+   // Track Peak Profit & Reset flags
    if(totalOpenPositions == 0)
    {
       m_peakBasketProfit = 0.0;
+      m_buyCounterPlaced = false;
+      m_sellCounterPlaced = false;
    }
    else
    {
@@ -97,10 +103,10 @@ void OnTick()
       }
    }
 
-   // 3. ON-DEMAND DYNAMIC COUNTER-HEDGE PLACEMENT (Places counter pendings 20 pips away on trade trigger)
+   // 3. ON-DEMAND DYNAMIC 10-ORDER COUNTER-HEDGE PLACEMENT
    if(totalOpenPositions > 0)
    {
-      ManageOnDemandCounterHedges();
+      ManageOnDemand10CounterHedges(buyCount, sellCount);
    }
 
    // 4. BREAK-EVEN SHIELD & REVERSAL PROTECTION (Locks profit when price turns back)
@@ -137,9 +143,9 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| On-Demand Dynamic Counter-Hedge Manager                          |
+//| On-Demand Dynamic 10 Counter-Hedge Manager                       |
 //+------------------------------------------------------------------+
-void ManageOnDemandCounterHedges()
+void ManageOnDemand10CounterHedges(int buyCount, int sellCount)
 {
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -147,57 +153,80 @@ void ManageOnDemandCounterHedges()
    long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double hedgeGap = InpDynamicHedgeGapPts * point; // 200 points = 20 pips
 
-   // Loop over open positions
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-      {
-         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-         double volume = PositionGetDouble(POSITION_VOLUME);
+   double startLot = 0.01;
+   double lotStep = 0.01;
+   int stepCount = 10; // Exactly 10 counter orders
 
-         if(posType == POSITION_TYPE_BUY)
+   // 1. Buy triggered -> Place 10 Counter Sell Stops 20 pips below Buy Entry
+   if(buyCount > 0 && !m_buyCounterPlaced)
+   {
+      double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
+      if(firstBuyPrice > 0)
+      {
+         double sellBasePrice = firstBuyPrice - hedgeGap;
+         double cumulativeOffset = 0;
+         double currentStepDistance = InpBaseGridStepPoints * point;
+
+         for(int i = 1; i <= stepCount; i++)
          {
-            // Buy triggered -> Check if counter Sell Stop 20 pips below openPrice already exists
-            double targetSellPrice = NormalizeDouble(openPrice - hedgeGap, _Digits);
-            if(targetSellPrice < bid - stopLevel * point && !PendingOrderExistsAtPrice(ORDER_TYPE_SELL_STOP, targetSellPrice))
+            double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+            double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
+
+            if(price < bid - stopLevel * point && price > 0)
             {
-               PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, volume, targetSellPrice, "OnDemandSellHedge");
+               PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("CounterSell #%d", i));
             }
+            cumulativeOffset += currentStepDistance;
+            currentStepDistance *= InpSpacingMultiplier;
          }
-         else if(posType == POSITION_TYPE_SELL)
+         m_buyCounterPlaced = true;
+      }
+   }
+
+   // 2. Sell triggered -> Place 10 Counter Buy Stops 20 pips above Sell Entry
+   if(sellCount > 0 && !m_sellCounterPlaced)
+   {
+      double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
+      if(firstSellPrice > 0)
+      {
+         double buyBasePrice = firstSellPrice + hedgeGap;
+         double cumulativeOffset = 0;
+         double currentStepDistance = InpBaseGridStepPoints * point;
+
+         for(int i = 1; i <= stepCount; i++)
          {
-            // Sell triggered -> Check if counter Buy Stop 20 pips above openPrice already exists
-            double targetBuyPrice = NormalizeDouble(openPrice + hedgeGap, _Digits);
-            if(targetBuyPrice > ask + stopLevel * point && !PendingOrderExistsAtPrice(ORDER_TYPE_BUY_STOP, targetBuyPrice))
+            double lot = NormalizeLot(startLot + (i - 1) * lotStep);
+            double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
+
+            if(price > ask + stopLevel * point)
             {
-               PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, volume, targetBuyPrice, "OnDemandBuyHedge");
+               PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("CounterBuy #%d", i));
             }
+            cumulativeOffset += currentStepDistance;
+            currentStepDistance *= InpSpacingMultiplier;
          }
+         m_sellCounterPlaced = true;
       }
    }
 }
 
 //+------------------------------------------------------------------+
-//| Check if Pending Order Exists Near Target Price                  |
+//| Get First Open Position Price by Type                            |
 //+------------------------------------------------------------------+
-bool PendingOrderExistsAtPrice(ENUM_ORDER_TYPE orderType, double targetPrice)
+double GetFirstPositionOpenPrice(ENUM_POSITION_TYPE posType)
 {
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   for(int i = 0; i < PositionsTotal(); i++)
    {
-      ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
       {
-         if((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE) == orderType)
+         if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == posType)
          {
-            double price = OrderGetDouble(ORDER_PRICE_OPEN);
-            if(MathAbs(price - targetPrice) <= 30 * point) return true;
+            return PositionGetDouble(POSITION_PRICE_OPEN);
          }
       }
    }
-   return false;
+   return 0.0;
 }
 
 //+------------------------------------------------------------------+
