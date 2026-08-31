@@ -43,6 +43,7 @@ input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 m
 input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close ONLY IF PROFITABLE (Never at a loss)
 
 input group "=== Risk Control & Drawdown Cap ==="
+input int      InpMaxSpreadPoints     = 50;       // Max Allowed Spread Filter (50 Points = 5 Pips Max Spread)
 input double   InpMaxAllowedDrawdownUSD = 500.0;  // Maximum Allowed Drawdown ($500.00 Max USD Loss)
 input double   InpMaxDrawdownPercent    = 90.0;   // Emergency Equity Protection (%)
 input bool     InpClosePendingsFriday   = true;   // Weekend Gap Guard (Friday 23:40 Pending Delete)
@@ -238,9 +239,15 @@ void OnTick()
       ResetStateMachine();
    }
 
-   // 12. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours)
+   // 12. STATE: EMPTY STATE -> START PLACEMENT (During allowed BD trading hours & Normal Spread)
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
+      long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+      if(InpMaxSpreadPoints > 0 && currentSpread > InpMaxSpreadPoints)
+      {
+         return; // Skip grid placement during spread spikes in Real Ticks mode!
+      }
+
       if(!InpUseTimeWindow || IsWithinBDTradingHours())
       {
          m_gridState = GRID_STATE_PLACING_INITIAL;
