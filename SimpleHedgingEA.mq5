@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Precision S&R Zone Breakout Dual Grid EA           |
+//| Description: Strict M1 Timeframe Dual Grid EA                    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "100.00"
-#property description "Precision Zone Dual Grid EA: 11 BuyStops placed OUTSIDE 30-Min High & 11 SellStops placed OUTSIDE 30-Min Low (Target $5.00, Max Loss $500.00)"
+#property version   "101.00"
+#property description "Strict M1 Dual Grid EA: Strictly evaluates M1 30-candle High/Low zone boundaries (Target $5.00, Max Loss $500.00)"
 
 #include <Trade\Trade.mqh>
 
@@ -23,9 +23,9 @@ enum ENUM_GRID_STATE
 };
 
 //--- Input Parameters
-input group "=== Zone & Grid Settings ==="
-input int      InpZoneLookback        = 30;       // Support/Resistance Zone Lookback (30 M1 Bars)
-input int      InpZoneBufferPoints    = 50;       // Zone Breakout Buffer (50 Points = 5 Pips Beyond High/Low)
+input group "=== Strict M1 Zone Settings ==="
+input int      InpZoneLookback        = 30;       // M1 Support/Resistance Lookback (30 M1 Candles)
+input int      InpZoneBufferPoints    = 50;       // M1 Zone Buffer (50 Points = 5 Pips Beyond M1 High/Low)
 input double   InpStartLot            = 0.01;     // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;      // Base Grid Step (150 Points = 15 Pips)
@@ -76,7 +76,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Precision Zone Dual Grid EA v100.0 Initialized. Zone Lookback: %d bars, Target: $%.2f, Max Loss: $%.2f", 
+   PrintFormat("[INIT] Strict M1 Dual Grid EA v101.0 Initialized. M1 Lookback: %d candles, Target: $%.2f, Max Loss: $%.2f", 
                InpZoneLookback, InpTargetProfitUSD, InpMaxAllowedDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -351,12 +351,12 @@ void DeletePendingOrdersByType(ENUM_ORDER_TYPE targetType)
 }
 
 //+------------------------------------------------------------------+
-//| Setup Precision Support & Resistance Zone Grid                   |
+//| Setup M1 Chart Zone Grid (Strictly M1 Timeframe High/Low)        |
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
    double m1High = 0, m1Low = 0;
-   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low);
+   FindM1ZoneSafe(InpZoneLookback, m1High, m1Low); // Strictly M1 Timeframe!
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -365,9 +365,9 @@ void SetupPacedInitialDualGrid()
 
    if(ask <= 0 || bid <= 0 || point <= 0) return;
 
-   // Place BuyStops OUTSIDE the 30-min High + Buffer
+   // Place BuyStops OUTSIDE M1 High + Buffer
    double buyBasePrice = MathMax(m1High + InpZoneBufferPoints * point, ask + (stopLevel + 15) * point);
-   // Place SellStops OUTSIDE the 30-min Low - Buffer
+   // Place SellStops OUTSIDE M1 Low - Buffer
    double sellBasePrice = MathMin(m1Low - InpZoneBufferPoints * point, bid - (stopLevel + 15) * point);
 
    // Place 1 Buy Stop per tick in Buy Zone (0.01 to 0.11 Lot)
@@ -458,7 +458,7 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
 }
 
 //+------------------------------------------------------------------+
-//| Find M1 Support and Resistance Zone                              |
+//| Find STRICT M1 Timeframe Support and Resistance Zone             |
 //+------------------------------------------------------------------+
 void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
 {
@@ -476,6 +476,7 @@ void FindM1ZoneSafe(int lookback, double &m1High, double &m1Low)
    ArraySetAsSeries(highArray, true);
    ArraySetAsSeries(lowArray, true);
 
+   // STRICTLY COPY PERIOD_M1 CANDLE DATA ONLY
    int copiedHigh = CopyHigh(_Symbol, PERIOD_M1, 1, lookback, highArray);
    int copiedLow = CopyLow(_Symbol, PERIOD_M1, 1, lookback, lowArray);
 
@@ -597,9 +598,9 @@ void DeleteAllPendingOrdersGuaranteed()
 //+------------------------------------------------------------------+
 //| Get Open Trade Stats & Per-Side Floating Profits                 |
 //+------------------------------------------------------------------+
-void GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sellStopCount,
-                   double &totalBuyLot, double &totalSellLot,
-                   double &buyProfitUSD, double &sellProfitUSD)
+double GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sellStopCount,
+                     double &totalBuyLot, double &totalSellLot,
+                     double &buyProfitUSD, double &sellProfitUSD)
 {
    buyCount = 0; sellCount = 0; buyStopCount = 0; sellStopCount = 0;
    totalBuyLot = 0; totalSellLot = 0; buyProfitUSD = 0.0; sellProfitUSD = 0.0;
