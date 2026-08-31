@@ -6,8 +6,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "93.00"
-#property description "Pure Dual Grid EA: Independent Buy/Sell Side Exits with Per-Side Max Loss Cap ($50) to prevent 0.66-lot loss accumulation"
+#property version   "94.00"
+#property description "Pure Dual Grid EA: Per-Position Auto SL (20 pips) + Independent Side Exits - Zero False Breakout Accumulation"
 
 #include <Trade\Trade.mqh>
 
@@ -27,6 +27,7 @@ input group "=== Grid & Lot Settings ==="
 input double   InpStartLot            = 0.01;    // Initial Starting Lot (0.01)
 input double   InpLotStep             = 0.01;    // Lot Increment Step (0.01)
 input int      InpBaseGridStepPoints  = 150;     // Base Grid Step (150 Points = 15 Pips)
+input int      InpPositionSLPoints    = 200;     // Per-Position Auto Stop Loss (200 Points = 20 Pips below/above entry)
 input double   InpBuySideTargetUSD    = 1.00;    // Buy Side Profit Target ($1.00 - Close Buys Only)
 input double   InpSellSideTargetUSD   = 1.00;    // Sell Side Profit Target ($1.00 - Close Sells Only)
 input double   InpMaxSideLossUSD      = 50.0;    // Per-Side Max Loss Cap ($50 - Force Close Side if Loss Exceeds)
@@ -68,8 +69,8 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    ResetStateMachine();
 
-   PrintFormat("[INIT] v92.0 Independent Buy/Sell Side Profit Exit EA. BuyTarget: $%.2f, SellTarget: $%.2f, MaxDD: $%.2f",
-               InpBuySideTargetUSD, InpSellSideTargetUSD, InpMaxAllowedDrawdownUSD);
+   PrintFormat("[INIT] v94.0 Auto-SL Per-Position (SL: %d pts) + Independent Side Exits. BuyTgt: $%.2f SellTgt: $%.2f MaxSideLoss: $%.2f",
+               InpPositionSLPoints, InpBuySideTargetUSD, InpSellSideTargetUSD, InpMaxSideLossUSD);
    return(INIT_SUCCEEDED);
 }
 
@@ -358,18 +359,20 @@ void SetupPacedInitialDualGrid()
 
    double buyBase  = MathMax(m1High, ask + (stopLvl + 15) * point);
    double sellBase = MathMin(m1Low,  bid - (stopLvl + 15) * point);
+   double slPoints = InpPositionSLPoints * point; // Auto SL distance
 
-   // Place Buy Stop (1 per tick)
+   // Place Buy Stop (1 per tick) with Auto Stop Loss
    if(m_buyGridPlacedCount < 11)
    {
       int    i      = m_buyGridPlacedCount + 1;
       double lot    = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
       double offset = (i - 1) * InpBaseGridStepPoints * point;
       double price  = NormalizeDouble(buyBase + offset, _Digits);
+      double sl     = NormalizeDouble(price - slPoints, _Digits); // SL below entry
 
       if(price > ask + stopLvl * point)
       {
-         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, StringFormat("BuyZone #%d", i)))
+         if(PlacePendingOrderSafe(ORDER_TYPE_BUY_STOP, lot, price, sl, 0, StringFormat("BuyZone #%d", i)))
             m_buyGridPlacedCount++;
       }
       else
@@ -379,17 +382,18 @@ void SetupPacedInitialDualGrid()
       return;
    }
 
-   // Place Sell Stop (1 per tick)
+   // Place Sell Stop (1 per tick) with Auto Stop Loss
    if(m_sellGridPlacedCount < 11)
    {
       int    i      = m_sellGridPlacedCount + 1;
       double lot    = NormalizeLot(InpStartLot + (i - 1) * InpLotStep);
       double offset = (i - 1) * InpBaseGridStepPoints * point;
       double price  = NormalizeDouble(sellBase - offset, _Digits);
+      double sl     = NormalizeDouble(price + slPoints, _Digits); // SL above entry
 
       if(price < bid - stopLvl * point)
       {
-         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, StringFormat("SellZone #%d", i)))
+         if(PlacePendingOrderSafe(ORDER_TYPE_SELL_STOP, lot, price, sl, 0, StringFormat("SellZone #%d", i)))
             m_sellGridPlacedCount++;
       }
       else
@@ -401,15 +405,15 @@ void SetupPacedInitialDualGrid()
 }
 
 //+------------------------------------------------------------------+
-//| Place pending order with multi-filling fallback                  |
+//| Place pending order with auto SL and multi-filling fallback      |
 //+------------------------------------------------------------------+
-bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, string comment)
+bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, double sl, double tp, string comment)
 {
    if(orderType == ORDER_TYPE_BUY_STOP)
-      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment)) return true;
+      if(m_trade.BuyStop(lot, price, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)) return true;
 
    if(orderType == ORDER_TYPE_SELL_STOP)
-      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment)) return true;
+      if(m_trade.SellStop(lot, price, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)) return true;
 
    ENUM_ORDER_TYPE_FILLING fillings[] = {ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN};
    for(int f = 0; f < 3; f++)
@@ -420,6 +424,8 @@ bool PlacePendingOrderSafe(ENUM_ORDER_TYPE orderType, double lot, double price, 
       req.symbol       = _Symbol;
       req.volume       = lot;
       req.price        = price;
+      req.sl           = sl;
+      req.tp           = tp;
       req.type         = orderType;
       req.type_filling = fillings[f];
       req.type_time    = ORDER_TIME_GTC;
