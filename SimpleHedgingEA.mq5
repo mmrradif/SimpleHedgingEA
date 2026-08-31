@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 100% Paced Dual Grid Engine ($5000 Max DD Limit)    |
+//| Description: 20-Pip Anti-Block 11-Counter Hedging Grid EA        |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "77.00"
-#property description "100% Paced Dual Grid Engine ($5000.00 Max USD Loss Limit - Zero MT5 Block Errors)"
+#property version   "78.00"
+#property description "20-Pip Anti-Block 11-Counter Hedging Grid EA (11 Buy & 11 Sell Initial Pendings + 20-Pip 11 Counter Pendings - Zero MT5 Block)"
 
 #include <Trade\Trade.mqh>
 
@@ -18,7 +18,7 @@ input double   InpLotStep             = 0.01;     // Lot Increment Step (0.01)
 input double   InpCounterLotMultiplier= 1.50;     // Counter Hedge Lot Multiplier (1.5x)
 input int      InpBaseGridStepPoints  = 250;      // Base Grid Distance Between Levels (250 Points = 25 Pips)
 input double   InpSpacingMultiplier   = 1.18;     // Distance Multiplier
-input int      InpCounterOffsetPoints = 500;      // Counter Hedge Offset (500 Points = 50 Pips Below/Above Entry)
+input int      InpDynamicHedgeGapPts  = 200;      // On-Demand Counter Hedge Distance (200 Points = 20 Pips Below/Above Entry)
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Risk Control & Drawdown Cap ==="
@@ -52,7 +52,7 @@ int OnInit()
    
    ResetCounters();
 
-   PrintFormat("[INIT] 100%% Paced Dual Grid EA v77.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 20-Pip Anti-Block Grid EA v78.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -106,14 +106,14 @@ void OnTick()
       return;
    }
 
-   // 5. PACED INITIAL 11 BUY STOPS & 11 SELL STOPS PLACEMENT (1 Order Per Tick Max)
+   // 5. PACED INITIAL 11 BUY STOPS & 11 SELL STOPS PLACEMENT (1 Order Per Tick Max - Anti-Block)
    if(totalOpenPositions == 0 && (m_buyGridPlacedCount < 11 || m_sellGridPlacedCount < 11))
    {
       SetupPacedInitialDualGrid();
       return;
    }
 
-   // 6. PACED ON-DEMAND 11 COUNTER HEDGES (Places 11 counter orders 50 pips away with 1.5x multiplier, 1 Order Per Tick Max)
+   // 6. PACED ON-DEMAND 11 COUNTER HEDGES (Places 11 counter orders 20 pips away with 1.5x multiplier, 1 Order Per Tick Max - Anti-Block)
    if(totalOpenPositions > 0)
    {
       ManagePaced11CounterHedges(buyCount, sellCount);
@@ -148,7 +148,7 @@ void DeleteOnePendingOrderPaced()
 }
 
 //+------------------------------------------------------------------+
-//| Setup Paced Initial Dual Grid (1 Order Per Tick Max)             |
+//| Setup Paced Initial Dual Grid (1 Order Per Tick Max - Anti-Block)|
 //+------------------------------------------------------------------+
 void SetupPacedInitialDualGrid()
 {
@@ -214,7 +214,7 @@ void SetupPacedInitialDualGrid()
 }
 
 //+------------------------------------------------------------------+
-//| Manage Paced 11 Counter Hedges (1 Order Per Tick Max)            |
+//| Manage Paced 11 Counter Hedges (20 Pips Away, 1 Order Per Tick)  |
 //+------------------------------------------------------------------+
 void ManagePaced11CounterHedges(int buyCount, int sellCount)
 {
@@ -222,12 +222,12 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double offset50Pips = InpCounterOffsetPoints * point; // 500 points = 50 pips
+   double offset20Pips = InpDynamicHedgeGapPts * point; // 200 points = 20 pips
 
    double startLot = 0.01;
    double lotStep = 0.01;
 
-   // 1. Buy Position Triggered -> Place 11 Counter SellStops 50 pips BELOW Buy Entry with 1.5x Volume (1 per tick)
+   // 1. Buy Position Triggered -> Place 11 Counter SellStops 20 pips BELOW Buy Entry with 1.5x Volume (1 per tick)
    if(buyCount > 0 && m_sellCounterPlacedCount < 11)
    {
       double firstBuyPrice = GetFirstPositionOpenPrice(POSITION_TYPE_BUY);
@@ -236,7 +236,7 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
          int i = m_sellCounterPlacedCount + 1;
          double baseLot = startLot + (i - 1) * lotStep;
          double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-         double sellBasePrice = firstBuyPrice - offset50Pips;
+         double sellBasePrice = firstBuyPrice - offset20Pips;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(sellBasePrice - cumulativeOffset, _Digits);
 
@@ -255,7 +255,7 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
       return; // 1 Order per tick!
    }
 
-   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 50 pips ABOVE Sell Entry with 1.5x Volume (1 per tick)
+   // 2. Sell Position Triggered -> Place 11 Counter BuyStops 20 pips ABOVE Sell Entry with 1.5x Volume (1 per tick)
    if(sellCount > 0 && m_buyCounterPlacedCount < 11)
    {
       double firstSellPrice = GetFirstPositionOpenPrice(POSITION_TYPE_SELL);
@@ -264,7 +264,7 @@ void ManagePaced11CounterHedges(int buyCount, int sellCount)
          int i = m_buyCounterPlacedCount + 1;
          double baseLot = startLot + (i - 1) * lotStep;
          double weightedLot = NormalizeLot(baseLot * InpCounterLotMultiplier); // 1.5x Multiplier!
-         double buyBasePrice = firstSellPrice + offset50Pips;
+         double buyBasePrice = firstSellPrice + offset20Pips;
          double cumulativeOffset = GetCumulativeOffset(i);
          double price = NormalizeDouble(buyBasePrice + cumulativeOffset, _Digits);
 
