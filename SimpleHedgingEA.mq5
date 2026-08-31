@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: 100% Paced Dual Grid Engine (Zero MT5 Stop Errors)  |
+//| Description: 100% Paced Dual Grid Engine ($5000 Max DD Limit)    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "74.00"
-#property description "100% Paced Dual Grid Engine (Places 1 Order & Deletes 1 Order Per Tick - Guaranteed Zero MT5 Tester Stops)"
+#property version   "75.00"
+#property description "100% Paced Dual Grid Engine ($5000.00 Max USD Drawdown Limit)"
 
 #include <Trade\Trade.mqh>
 
@@ -22,8 +22,8 @@ input int      InpCounterOffsetPoints = 500;      // Counter Hedge Offset (500 P
 input double   InpTargetProfitUSD     = 5.00;     // Target Net Basket Profit ($5.00 Close All)
 
 input group "=== Risk Control & Drawdown Cap ==="
-input double   InpMaxDrawdownUSD      = 500.0;    // Strict Maximum Allowed Drawdown ($500.00 Max USD Loss)
-input double   InpMaxDrawdownPercent  = 50.0;     // Emergency Equity Protection (%)
+input double   InpMaxDrawdownUSD      = 5000.0;   // Strict Maximum Allowed Drawdown ($5000.00 Max USD Loss)
+input double   InpMaxDrawdownPercent  = 80.0;     // Emergency Equity Protection (%)
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -52,7 +52,7 @@ int OnInit()
    
    ResetCounters();
 
-   PrintFormat("[INIT] 100%% Paced Dual Grid EA v74.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
+   PrintFormat("[INIT] 100%% Paced Dual Grid EA v75.0 Initialized. Target: $%.2f, Max DD: $%.2f", 
                InpTargetProfitUSD, InpMaxDrawdownUSD);
    return(INIT_SUCCEEDED);
 }
@@ -552,7 +552,7 @@ bool CheckEquityProtection()
       double floatingLossUSD = balance - equity;
       double drawdownPercent = (floatingLossUSD / balance) * 100.0;
 
-      // 1. Hard Max USD Drawdown Cap ($500.00)
+      // 1. Hard Max USD Drawdown Cap ($5000.00)
       if(InpMaxDrawdownUSD > 0 && floatingLossUSD >= InpMaxDrawdownUSD)
       {
          PrintFormat("[MAX DRAWDOWN CUTOFF] Floating Loss $%.2f >= Limit $%.2f! Instant liquidation...", 
