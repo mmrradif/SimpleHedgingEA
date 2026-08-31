@@ -2,12 +2,12 @@
 //|                                              SimpleHedgingEA.mq5 |
 //|                                Copyright 2026, Antigravity AI    |
 //|                                             https://www.mql5.com |
-//| Description: Tiered Drawdown & Guaranteed Multi-Trade Profit EA |
+//| Description: High Execution Dual Grid EA (Instant Placement)     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Antigravity AI"
 #property link      "https://www.mql5.com"
-#property version   "112.00"
-#property description "Tiered DD ($50 for 1-2 trades, $200 for 4, $300 for 6, $400 for 8, $500 for 10+) & Guaranteed Profit EA"
+#property version   "113.00"
+#property description "High Execution Dual Grid EA: Guaranteed Instant Order Placement (InpUseTimeWindow=false, InpMaxSpreadPoints=300) with Tiered DD ($50-$500)"
 
 #include <Trade\Trade.mqh>
 
@@ -41,17 +41,17 @@ input double   InpDDLimit5to6Trades   = 300.0;    // Max Loss for 5-6 Trades ($3
 input double   InpDDLimit7to8Trades   = 400.0;    // Max Loss for 7-8 Trades ($400.00)
 input double   InpDDLimit9PlusTrades  = 500.0;    // Max Loss for 9+ Trades ($500.00)
 
-input group "=== Bangladesh Time Schedule (GMT+6) ==="
-input bool     InpUseTimeWindow       = true;     // Enable Time Schedule Filter
+input group "=== Trading Schedule & Filters ==="
+input bool     InpUseTimeWindow       = false;    // Enable Time Schedule Filter (Set false for instant 24/7 testing)
 input int      InpBDStartHour         = 7;        // Start Trading Hour (07:00 AM BD Time)
 input int      InpBDEndHour           = 22;       // End Trading Hour (10:00 PM BD Time)
 input int      InpBDtoServerDiffHours = 3;        // Hour Difference (BD GMT+6 minus Broker GMT+3 = 3 Hours)
-input bool     InpEODProfitOnlyClose  = true;     // Night EOD Close ONLY IF PROFITABLE (Never at a loss)
+input bool     InpEODProfitOnlyClose  = false;    // Night EOD Close ONLY IF PROFITABLE
 
 input group "=== Risk Control & Spread Guard ==="
-input int      InpMaxSpreadPoints     = 50;       // Max Allowed Spread Filter (50 Points = 5 Pips Max Spread)
-input double   InpMaxDrawdownPercent    = 20.0;   // Maximum Allowed Equity Drawdown (20.0%)
-input bool     InpClosePendingsFriday   = true;   // Weekend Gap Guard (Friday 23:40 Pending Delete)
+input int      InpMaxSpreadPoints     = 300;      // Max Allowed Spread Filter (300 Points = 30 Pips for Gold/FX)
+input double   InpMaxDrawdownPercent    = 90.0;   // Maximum Allowed Equity Drawdown (%)
+input bool     InpClosePendingsFriday   = false;  // Weekend Gap Guard
 
 input group "=== Expert Settings ==="
 input ulong    InpMagicNumber         = 888111;   // Magic Number
@@ -81,7 +81,7 @@ int OnInit()
    
    ResetStateMachine();
 
-   PrintFormat("[INIT] Tiered DD & Guaranteed Profit EA v111.0 Initialized. Target: $%.2f, Tiered DD: $100-$500", 
+   PrintFormat("[INIT] High Execution Dual Grid EA v113.0 Initialized. Target: $%.2f, Tiered DD: $50-$500", 
                InpTargetProfitUSD);
    return(INIT_SUCCEEDED);
 }
@@ -113,7 +113,7 @@ void OnTick()
       return;
    }
 
-   // 3. Friday Weekend Gap Protection (Deletes Pendings at Friday 23:40)
+   // 3. Friday Weekend Gap Protection
    if(InpClosePendingsFriday && IsFridayNightClose())
    {
       if(OrdersTotal() > 0)
@@ -135,7 +135,7 @@ void OnTick()
       return;
    }
 
-   // 5. EOD NIGHT CLOSE ONLY IF NET PROFITABLE (At 21:55 BD Time)
+   // 5. EOD NIGHT CLOSE ONLY IF NET PROFITABLE
    if(InpEODProfitOnlyClose && IsEODCloseTime())
    {
       if(buyCount > 0 && buyProfitUSD > 0.0)
@@ -157,7 +157,7 @@ void OnTick()
       return;
    }
 
-   // 6. BANGLADESH TIME SCHEDULE FILTER (07:00 AM BD to 10:00 PM BD)
+   // 6. BANGLADESH TIME SCHEDULE FILTER
    if(InpUseTimeWindow && !IsWithinBDTradingHours())
    {
       if(totalOpenPositions == 0 && totalPendingOrders > 0)
@@ -210,7 +210,6 @@ void OnTick()
    }
    else if(buyCount > 0)
    {
-      // 1-2 Buy Trades Exit
       if(buyProfitUSD >= 0.50)
       {
          PrintFormat(">>> [BUY PROFIT EXIT] Buy Profit $%.2f >= $0.50 (%d buys). Closing Buy side IN PROFIT...", buyProfitUSD, buyCount);
@@ -240,7 +239,6 @@ void OnTick()
    }
    else if(sellCount > 0)
    {
-      // 1-2 Sell Trades Exit
       if(sellProfitUSD >= 0.50)
       {
          PrintFormat(">>> [SELL PROFIT EXIT] Sell Profit $%.2f >= $0.50 (%d sells). Closing Sell side IN PROFIT...", sellProfitUSD, sellCount);
@@ -259,7 +257,7 @@ void OnTick()
       ResetStateMachine();
    }
 
-   // 10. STATE: EMPTY STATE -> START PLACEMENT
+   // 10. STATE: EMPTY STATE -> START PLACEMENT IMMEDIATELY
    if(totalOpenPositions == 0 && totalPendingOrders == 0 && m_gridState == GRID_STATE_EMPTY)
    {
       long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
@@ -675,11 +673,6 @@ double GetTradeStats(int &buyCount, int &sellCount, int &buyStopCount, int &sell
 
 //+------------------------------------------------------------------+
 //| TIERED DYNAMIC DRAWDOWN CUTOFF CHECK                             |
-//| 1-2 Trades: $100 Limit                                          |
-//| 3-4 Trades: $200 Limit                                          |
-//| 5-6 Trades: $300 Limit                                          |
-//| 7-8 Trades: $400 Limit                                          |
-//| 9+ Trades:  $500 Limit                                          |
 //+------------------------------------------------------------------+
 bool CheckTieredEquityProtection(int totalOpenPositions)
 {
@@ -692,14 +685,14 @@ bool CheckTieredEquityProtection(int totalOpenPositions)
       double drawdownPercent = (floatingLossUSD / balance) * 100.0;
 
       // Determine Dynamic Tiered Max USD Loss Cutoff based on open trade count
-      double currentMaxAllowedLossUSD = InpDDLimit1to2Trades; // Default $100 for 1-2 trades
+      double currentMaxAllowedLossUSD = InpDDLimit1to2Trades; // Default $50 for 1-2 trades
       if(totalOpenPositions >= 9)       currentMaxAllowedLossUSD = InpDDLimit9PlusTrades; // $500
       else if(totalOpenPositions >= 7)  currentMaxAllowedLossUSD = InpDDLimit7to8Trades;  // $400
       else if(totalOpenPositions >= 5)  currentMaxAllowedLossUSD = InpDDLimit5to6Trades;  // $300
       else if(totalOpenPositions >= 3)  currentMaxAllowedLossUSD = InpDDLimit3to4Trades;  // $200
-      else if(totalOpenPositions >= 1)  currentMaxAllowedLossUSD = InpDDLimit1to2Trades;  // $100
+      else if(totalOpenPositions >= 1)  currentMaxAllowedLossUSD = InpDDLimit1to2Trades;  // $50
 
-      // 1. Hard Dynamic Tiered USD Drawdown Cap ($100 to $500)
+      // 1. Hard Dynamic Tiered USD Drawdown Cap ($50 to $500)
       if(currentMaxAllowedLossUSD > 0 && floatingLossUSD >= currentMaxAllowedLossUSD)
       {
          PrintFormat("[TIERED DD CUTOFF] Floating Loss $%.2f >= Dynamic Limit $%.2f (%d open trades)! Instant liquidation...", 
@@ -710,7 +703,7 @@ bool CheckTieredEquityProtection(int totalOpenPositions)
          return true;
       }
 
-      // 2. Hard Equity Percent Protection (20.0% Default)
+      // 2. Hard Equity Percent Protection
       if(drawdownPercent >= InpMaxDrawdownPercent)
       {
          PrintFormat("[EMERGENCY STOP] Max Drawdown %.2f%% reached! Instant liquidation...", drawdownPercent);
