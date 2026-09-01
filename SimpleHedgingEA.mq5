@@ -10,13 +10,14 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 1 BuyStop + 1 SellStop, 0.05 each.             |
-//|   2. First fill wins -> opposite pending DELETED, replaced       |
-//|      IMMEDIATELY by calculated Reverse Recovery Stop.            |
-//|   3. TRENDING: rides to Target TP ($15) or Trailing Net.         |
-//|   4. REVERSAL: standing reverse stop triggers with exact lot,    |
+//|   1. Flat  -> arm 20 BuyStop + 20 SellStop, 0.05 each.           |
+//|   2. First fill wins -> opposite pendings cleared, same-dir      |
+//|      pendings KEPT on chart -> PHASE 1: TREND RIDING.            |
+//|   3. TRENDING: sequential fills ride trend, peak tracked,        |
+//|      trailing net locks massive profits, all open until TP!      |
+//|   4. REVERSAL: standing reverse stop triggers with dominant lot, |
 //|      instantly arms next reverse stop on opposite side.          |
-//|   5. PING-PONG & TIME DECAY: smart target decay exits in profit. |
+//|   5. PING-PONG & TIME DECAY: fast escape targets ($3.50 -> $0).  |
 //|   6. Close -> Next Candle Filter -> re-arm.                      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
@@ -41,7 +42,7 @@ input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fract
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 1;      // BuyStops and SellStops (1 BuyStop + 1 SellStop — zero overstacking risk!)
+input int      InpMaxGridLevels       = 20;     // BuyStops and SellStops (20 BuyStop + 20 SellStop multi-level grid)
 input double   InpStartLot            = 0.05;   // Every grid pending starts here — 0.05 for XAUUSD
 input double   InpGridStepUSD         = 5.00;   // Minimum gap between levels — $5 = $1.00 chart gap for 0.05 lot
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
@@ -1301,7 +1302,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = 1; // Strictly 1 BuyStop + 1 SellStop (zero overstacking risk!)
+   int    n       = MathMax(InpMaxGridLevels, 1); // Place full 20 levels of BuyStops / SellStops
    double lot     = NormalizeLot(InpStartLot);
    int    placed  = 0;
 
