@@ -10,14 +10,14 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 20 BuyStop + 20 SellStop, 0.05 each.           |
+//|   1. Flat  -> arm 20 BuyStop + 20 SellStop, 0.01 start lot.      |
 //|   2. First fill wins -> opposite pendings cleared, same-dir      |
 //|      pendings KEPT on chart -> PHASE 1: TREND RIDING.            |
 //|   3. TRENDING: sequential fills ride trend, peak tracked,        |
 //|      trailing net locks massive profits, all open until TP!      |
-//|   4. REVERSAL: standing reverse stop triggers with dominant lot, |
+//|   4. REVERSAL: standing reverse stop triggers with dynamic lot,  |
 //|      instantly arms next reverse stop on opposite side.          |
-//|   5. PING-PONG & TIME DECAY: fast escape targets ($3.50 -> $0).  |
+//|   5. PING-PONG & TIME DECAY: fast escape targets ($2.50 -> $0).  |
 //|   6. Close -> Next Candle Filter -> re-arm.                      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
@@ -29,7 +29,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit ==="
-input double   InpCloseProfitUSD      = 15.00;  // Basket TP target ($ net) — $15.00 for XAUUSD 0.05 lot ($3 gold move)
+input double   InpCloseProfitUSD      = 5.00;   // Basket TP target ($ net) — $5.00 for XAUUSD 0.01 lot ($5 gold move)
 input bool     InpUseBasketTP         = true;   // Write a shared TP price on every position
 input bool     InpScaleTPWithLegs     = true;   // Scale TP up with recovery depth
 input double   InpTPScaleFactor       = 0.50;   // Per recovery leg TP increase (0.50 = +50% per leg)
@@ -37,25 +37,25 @@ input double   InpTPScaleFactor       = 0.50;   // Per recovery leg TP increase 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Trend Riding ==="
 input bool     InpTrendRide           = true;   // Phase 1: allow same-dir fills while trending
-input double   InpTrendMinPeak        = 8.00;   // Minimum peak ($) before trailing activates — $8.00 on 0.05 lot
+input double   InpTrendMinPeak        = 3.00;   // Minimum peak ($) before trailing activates — $3.00 on 0.01 lot
 input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fraction from peak — 25% (gives room to ride trend)
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
 input int      InpMaxGridLevels       = 20;     // BuyStops and SellStops (20 BuyStop + 20 SellStop multi-level grid)
-input double   InpStartLot            = 0.05;   // Every grid pending starts here — 0.05 for XAUUSD
-input double   InpGridStepUSD         = 5.00;   // Minimum gap between levels — $5 = $1.00 chart gap for 0.05 lot
+input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low risk
+input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
 input int      InpAtrPeriod           = 14;     // ATR period (M1)
 input double   InpAtrMult             = 1.0;    // Step = ATR * this — 1.0 for XAUUSD
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Reversal / Recovery ==="
-input double   InpFirstTriggerUSD     = 8.00;   // Recovery trigger 1st leg ($) — $8.00 = $1.60 chart adverse move
-input double   InpReverseTriggerUSD   = 12.00;  // Recovery trigger 2nd+ legs ($) — $12.00 = $2.40 chart
+input double   InpFirstTriggerUSD     = 3.00;   // Recovery trigger 1st leg ($) — $3.00 for 0.01 lot
+input double   InpReverseTriggerUSD   = 5.00;   // Recovery trigger 2nd+ legs ($) — $5.00
 input int      InpReverseAfterSec     = 300;    // ...or after this long in the red (0 = off)
-input double   InpReverseDistUSD      = 6.00;   // Reversal stop distance — $6.00 = $1.20 chart gap (tight & responsive)
-input double   InpRecoverMoveUSD      = 8.00;   // Recovery move target — $8.00 = $1.60 chart move (fast TP reach)
+input double   InpReverseDistUSD      = 3.00;   // Reversal stop distance — $3.00 chart gap (wide & safe)
+input double   InpRecoverMoveUSD      = 4.00;   // Recovery move target — $4.00 chart move
 input bool     InpBeyondAllEntries    = true;   // Reversal must sit beyond EVERY existing entry
 input double   InpMaxLot              = 1.00;   // Hard cap on single recovery lot (1.00 lot)
 input double   InpMaxBasketLots       = 0.0;    // Basket lot cap (0 = OFF / Uncapped — prevents getting stuck in holding state)
@@ -1303,12 +1303,26 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = MathMax(InpMaxGridLevels, 1); // Place full 20 levels of BuyStops / SellStops
-   double lot     = NormalizeLot(InpStartLot);
+   int    n       = MathMax(InpMaxGridLevels, 1);
    int    placed  = 0;
+
+   // Minimum safety gap: at least 2.5x spread and at least 50 points/ticks
+   double point   = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double spread  = (ask > bid) ? (ask - bid) : 0;
+   double minSafetyGap = MathMax(spread * 2.5, point * 50);
+   if(step < minSafetyGap) step = minSafetyGap;
 
    for(int i = 0; i < n; i++)
    {
+      // Dynamic multi-tier lot scaling:
+      // Early 4 levels start at 0.01 lot, then scale gradually
+      double lot = InpStartLot;
+      if(i >= 16)      lot = NormalizeLot(InpStartLot * 5.0);
+      else if(i >= 12) lot = NormalizeLot(InpStartLot * 4.0);
+      else if(i >= 8)  lot = NormalizeLot(InpStartLot * 3.0);
+      else if(i >= 4)  lot = NormalizeLot(InpStartLot * 2.0);
+      else             lot = NormalizeLot(InpStartLot);
+
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
