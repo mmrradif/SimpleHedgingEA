@@ -1319,7 +1319,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = MathMax(InpMaxGridLevels, 1);
+   int    n       = 1; // Strictly 1 BuyStop + 1 SellStop (zero overstacking risk!)
    double lot     = NormalizeLot(InpStartLot);
    int    placed  = 0;
 
