@@ -324,16 +324,32 @@ void OnTick()
                   m_phase, m_trendDir > 0 ? "BUY" : "SELL");
    }
 
-   //=== PHASE 1: TRENDING =============================================
+   //=== PHASE 1: TRENDING / LIVE TRADING =============================
+   // Check Basket Target TP
+   double target = CloseTarget();
+   if(net >= target)
+   {
+      PrintFormat(">>> [TARGET CLOSE] net $%.2f >= target $%.2f — PROFIT LOCKED", net, target);
+      DeletePendings();
+      m_closingInProgress = true;
+      m_placeAfterClose   = true;
+      ProcessClose();
+      m_prevPosCount = CountPos();
+      DrawVisual();
+      return;
+   }
+
    if(m_phase == "TRENDING")
    {
       if(HandleTrendingPhase(buys, sells, buyLot, sellLot, net, pos))
       {
+         // Always keep the reverse stop armed even during trending!
+         int activeDir = ActiveDir();
+         SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
          m_prevPosCount = CountPos();
          DrawVisual();
          return;
       }
-      // false -> transitioned to RECOVERY, fall through
    }
 
    //=== PHASE 2B: BREAKOUT RECOVERY ===================================
@@ -368,7 +384,7 @@ void OnTick()
    else
       m_redSince = 0;
 
-   double target = CloseTarget();
+   target = CloseTarget();
 
    // Check for range breakout -> BREAKOUT phase transition
    if(InpBreakoutRecovery && buys > 0 && sells > 0)
@@ -1099,24 +1115,8 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
    if(InpMaxBasketLots > 0 && totalLots >= InpMaxBasketLots - 0.0005)
       return false;
 
-   if(InpUseTrendFilter && pos > 1)
-   {
-      int td = TrendDir();
-      if(td != 0 && recDir != td)
-         return false;
-   }
-
-   double spreadCost = SpreadCostUSD(totalLots);
-   // Tiered trigger with spread cost accounted for
-   double trigger = (pos == 1)
-                    ? MathMax(InpFirstTriggerUSD,   0.01)
-                    : MathMax(InpReverseTriggerUSD,  0.01);
-   if(net <= -(trigger + spreadCost)) return true;
-
-   if(InpReverseAfterSec > 0 && m_redSince > 0 && net < 0 &&
-      (TimeCurrent() - m_redSince) >= InpReverseAfterSec)
-      return true;
-   return false;
+   // Unconditional: ALWAYS arm the reverse recovery stop immediately so protection is always active!
+   return true;
 }
 
 //+------------------------------------------------------------------+
