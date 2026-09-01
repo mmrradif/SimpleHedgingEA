@@ -800,14 +800,7 @@ void SyncSinglePending(int activeDir, int buys, int sells,
    if(!WantRecovery(pos, net, recDir, buyLot + sellLot))
    {
       m_recoverDir = 0;
-      string why = "riding to TP";
-      if(InpMaxBasketLots > 0 && buyLot + sellLot >= InpMaxBasketLots - 0.0005)
-         why = "BASKET LOT CAP reached — maintaining protective hedge";
-      else if(InpUseTrendFilter && pos > 1)
-         why = "Trend Filter active";
-      m_state = StringFormat("%s LIVE — %s",
-                             activeDir > 0 ? "BUY" : "SELL", why);
-      // Do NOT delete existing protective hedge even if lot cap is hit
+      m_state = StringFormat("%s LIVE — riding to TP", activeDir > 0 ? "BUY" : "SELL");
       return;
    }
 
@@ -1108,13 +1101,8 @@ int TrendDir()
 //+------------------------------------------------------------------+
 bool WantRecovery(int pos, double net, int recDir, double totalLots)
 {
-   if(pos <= 0)                  return false;
-   if(pos >= InpMaxRecoveryLegs) return false;
-
-   if(InpMaxBasketLots > 0 && totalLots >= InpMaxBasketLots - 0.0005)
-      return false;
-
-   // Unconditional: ALWAYS arm the reverse recovery stop immediately so protection is always active!
+   if(pos <= 0)  return false;
+   if(pos >= 10) return false;
    return true;
 }
 
@@ -1148,12 +1136,6 @@ double RecoveryLot(int recDir, double net, double distToHit,
    if(lot < minLot) lot = minLot;
 
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
-
-   if(InpMaxBasketLots > 0 && totalLots + lot > InpMaxBasketLots)
-   {
-      double remaining = InpMaxBasketLots - totalLots;
-      if(remaining >= InpStartLot) lot = remaining;
-   }
    if(lot < InpStartLot) lot = InpStartLot;
    return NormalizeLot(lot);
 }
