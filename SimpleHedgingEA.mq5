@@ -56,9 +56,9 @@ input int      InpReverseAfterSec     = 300;    // ...or after this long in the 
 input double   InpReverseDistUSD      = 10.00;  // Reversal stop distance — $10 = $2.00 chart gap
 input double   InpRecoverMoveUSD      = 15.00;  // Recovery move target — $15 = $3.00 chart
 input bool     InpBeyondAllEntries    = true;   // Reversal must sit beyond EVERY existing entry
-input double   InpMaxLot              = 0.50;   // Hard cap on single recovery lot (full sizing freedom)
-input double   InpMaxBasketLots       = 1.00;   // Hard cap on total buyLot+sellLot (ample room for recovery math)
-input int      InpMaxRecoveryLegs     = 4;      // Max recovery legs — 4 legs
+input double   InpMaxLot              = 1.00;   // Hard cap on single recovery lot (ample sizing freedom)
+input double   InpMaxBasketLots       = 3.00;   // Hard cap on total basket lots (ample room for recovery math)
+input int      InpMaxRecoveryLegs     = 6;      // Max recovery legs — 6 legs (plenty of room to resolve chop)
 input int      InpRecoveryAccelMin    = 3;      // Minutes unfilled -> bring stop closer (0 = off)
 input double   InpAccelDistRatio      = 0.65;   // Recovery acceleration distance ratio (65%)
 input bool     InpBreakoutRecovery    = false;  // Breakout Recovery OFF (prevents chop zone whipsaws)
@@ -1200,8 +1200,30 @@ void DeleteAllOfType(ENUM_ORDER_TYPE type)
 //+------------------------------------------------------------------+
 void ReplacePending(ulong ticket, ENUM_ORDER_TYPE type, double lot, double price)
 {
-   m_trade.OrderDelete(ticket);
-   SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop");
+   if(!OrderSelect(ticket))
+   {
+      SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop");
+      return;
+   }
+   double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+   double curVol   = OrderGetDouble(ORDER_VOLUME_CURRENT);
+   // If volume is already the same and price hasn't moved significantly, keep it
+   if(MathAbs(curVol - lot) < 0.001 && MathAbs(curPrice - price) < SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10)
+      return;
+
+   // Try to place new one first before deleting old one to ensure continuous protection
+   if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop"))
+   {
+      m_trade.OrderDelete(ticket);
+   }
+   else
+   {
+      // If direct place failed, try modify
+      if(m_trade.OrderModify(ticket, price, 0, 0, ORDER_TIME_GTC, 0))
+         return;
+      m_trade.OrderDelete(ticket);
+      SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop");
+   }
 }
 
 //+------------------------------------------------------------------+
