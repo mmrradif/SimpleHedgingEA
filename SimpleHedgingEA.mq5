@@ -1094,12 +1094,20 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Recovery lot required to overcome loss and reach TP
    double lot = (target - lossAtFill) / denom + MathAbs(signedVol);
 
-   // Multiplier floor: ensure at least 1.8x - 2.0x of the opposite side
-   double oppLot = (recDir > 0) ? sellLot : buyLot;
-   double minLot = (oppLot > 0) ? NormalizeLot(oppLot * 1.8) : NormalizeLot(InpStartLot * 2.0);
-   if(lot < minLot) lot = minLot;
+   // The opposite active volume that we must overcome:
+   double oppVol = (recDir > 0) ? sellLot : buyLot;
+   double myVol  = (recDir > 0) ? buyLot  : sellLot;
 
-   if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
+   // HARD GUARANTEE: The new lot MUST make our side strictly dominant!
+   // (myVol + lot) MUST exceed oppVol to generate net profit on market movement
+   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.6 - myVol + InpStartLot) : (InpStartLot * 2.0);
+   if(minRequiredLot < InpStartLot) minRequiredLot = InpStartLot * 2.0;
+
+   if(lot < minRequiredLot) lot = minRequiredLot;
+
+   if(InpMaxLot > 0 && lot > InpMaxLot && InpMaxLot >= minRequiredLot) 
+      lot = InpMaxLot;
+
    if(lot < InpStartLot) lot = InpStartLot;
    return NormalizeLot(lot);
 }
