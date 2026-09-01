@@ -308,15 +308,19 @@ void OnTick()
       return;
    }
 
-   //=== PHASE DETECTION (first position seen this cycle) ==============
-   if(m_phase == "IDLE")
+   //=== PHASE DETECTION ===============================================
+   if(buys > 0 && sells > 0)
+   {
+      m_phase = "RECOVERY";
+   }
+   else if(m_phase == "IDLE")
    {
       m_trendDir = (buys >= sells) ? 1 : -1;
       m_phase    = InpTrendRide ? "TRENDING" : "RECOVERY";
       // Delete opposite-side pendings immediately; keep same-dir
       DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP);
       ClearAllTP(); // Clear any broker-side TP so position isn't prematurely killed
-      PrintFormat("[PHASE->%s] dir=%s, opposite pendings deleted, same-dir pendings KEPT",
+      PrintFormat("[PHASE->%s] dir=%s, opposite pendings deleted",
                   m_phase, m_trendDir > 0 ? "BUY" : "SELL");
    }
 
@@ -335,11 +339,11 @@ void OnTick()
       return;
    }
 
-   if(m_phase == "TRENDING")
+   if(m_phase == "TRENDING" && (buys == 0 || sells == 0))
    {
       if(HandleTrendingPhase(buys, sells, buyLot, sellLot, net, pos))
       {
-         // Always keep the reverse stop armed even during trending!
+         // Always keep the reverse recovery stop armed even during trending!
          int activeDir = ActiveDir();
          SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
          m_prevPosCount = CountPos();
@@ -1118,14 +1122,15 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
 //+------------------------------------------------------------------+
 //| R >= (target - L)/(move*vpp) - dir*signedVol                     |
 //+------------------------------------------------------------------+
-double RecoveryLot(int dir, double net, double distToHit,
+double RecoveryLot(int recDir, double net, double distToHit,
                    double buyLot, double sellLot, double totalLots)
 {
    double vpp       = ValuePerPrice();
    double signedVol = buyLot - sellLot;
    if(distToHit < 0) distToHit = 0;
 
-   double lossAtFill = net + signedVol * (dir * distToHit) * vpp;
+   // Floating loss when the reverse stop hits
+   double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
 
    double target = InpCloseProfitUSD;
    if(target < 0.02) target = 0.02;
@@ -1135,15 +1140,21 @@ double RecoveryLot(int dir, double net, double distToHit,
    double denom = move * vpp;
    if(denom < 0.01) denom = 0.01;
 
-   double lot = (target - lossAtFill) / denom - dir * signedVol;
+   // Recovery lot required to overcome loss and reach TP
+   double lot = (target - lossAtFill) / denom + MathAbs(signedVol);
 
-   double minFlip = -dir * signedVol + InpStartLot;
-   if(lot < minFlip)      lot = minFlip;
-   if(lot < InpStartLot)  lot = InpStartLot;
+   // Multiplier floor: ensure at least 1.8x - 2.0x of the opposite side
+   double oppLot = (recDir > 0) ? sellLot : buyLot;
+   double minLot = (oppLot > 0) ? NormalizeLot(oppLot * 1.8) : NormalizeLot(InpStartLot * 2.0);
+   if(lot < minLot) lot = minLot;
+
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
 
    if(InpMaxBasketLots > 0 && totalLots + lot > InpMaxBasketLots)
-      lot = InpMaxBasketLots - totalLots;
+   {
+      double remaining = InpMaxBasketLots - totalLots;
+      if(remaining >= InpStartLot) lot = remaining;
+   }
    if(lot < InpStartLot) lot = InpStartLot;
    return NormalizeLot(lot);
 }
