@@ -56,9 +56,9 @@ input int      InpReverseAfterSec     = 300;    // ...or after this long in the 
 input double   InpReverseDistUSD      = 10.00;  // Reversal stop distance — $10 = $2.00 chart gap
 input double   InpRecoverMoveUSD      = 15.00;  // Recovery move target — $15 = $3.00 chart
 input bool     InpBeyondAllEntries    = true;   // Reversal must sit beyond EVERY existing entry
-input double   InpMaxLot              = 1.00;   // Hard cap on single recovery lot (ample sizing freedom)
-input double   InpMaxBasketLots       = 3.00;   // Hard cap on total basket lots (ample room for recovery math)
-input int      InpMaxRecoveryLegs     = 6;      // Max recovery legs — 6 legs (plenty of room to resolve chop)
+input double   InpMaxLot              = 1.00;   // Hard cap on single recovery lot (1.00 lot)
+input double   InpMaxBasketLots       = 0.0;    // Basket lot cap (0 = OFF / Uncapped — prevents getting stuck in holding state)
+input int      InpMaxRecoveryLegs     = 10;     // Max recovery legs (10 legs — ample headroom to resolve any market chop)
 input int      InpRecoveryAccelMin    = 3;      // Minutes unfilled -> bring stop closer (0 = off)
 input double   InpAccelDistRatio      = 0.65;   // Recovery acceleration distance ratio (65%)
 input bool     InpBreakoutRecovery    = false;  // Breakout Recovery OFF (prevents chop zone whipsaws)
@@ -799,17 +799,15 @@ void SyncSinglePending(int activeDir, int buys, int sells,
 
    if(!WantRecovery(pos, net, recDir, buyLot + sellLot))
    {
-      DeleteAllOfType(recType);
       m_recoverDir = 0;
-      int td = TrendDir();
       string why = "riding to TP";
       if(InpMaxBasketLots > 0 && buyLot + sellLot >= InpMaxBasketLots - 0.0005)
-         why = "BASKET LOT CAP reached — holding, no new leg";
-      else if(InpUseTrendFilter && td != 0 && recDir != td)
-         why = StringFormat("recovery would fight the %s trend — holding",
-                            td > 0 ? "UP" : "DOWN");
-      m_state = StringFormat("%s LIVE — %s, 0 pendings",
+         why = "BASKET LOT CAP reached — maintaining protective hedge";
+      else if(InpUseTrendFilter && pos > 1)
+         why = "Trend Filter active";
+      m_state = StringFormat("%s LIVE — %s",
                              activeDir > 0 ? "BUY" : "SELL", why);
+      // Do NOT delete existing protective hedge even if lot cap is hit
       return;
    }
 
