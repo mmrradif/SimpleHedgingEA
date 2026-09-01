@@ -53,8 +53,8 @@ input group "=== Reversal / Recovery ==="
 input double   InpFirstTriggerUSD     = 8.00;   // Recovery trigger 1st leg ($) — $8.00 = $1.60 chart adverse move
 input double   InpReverseTriggerUSD   = 12.00;  // Recovery trigger 2nd+ legs ($) — $12.00 = $2.40 chart
 input int      InpReverseAfterSec     = 300;    // ...or after this long in the red (0 = off)
-input double   InpReverseDistUSD      = 10.00;  // Reversal stop distance — $10 = $2.00 chart gap
-input double   InpRecoverMoveUSD      = 15.00;  // Recovery move target — $15 = $3.00 chart
+input double   InpReverseDistUSD      = 6.00;   // Reversal stop distance — $6.00 = $1.20 chart gap (tight & responsive)
+input double   InpRecoverMoveUSD      = 8.00;   // Recovery move target — $8.00 = $1.60 chart move (fast TP reach)
 input bool     InpBeyondAllEntries    = true;   // Reversal must sit beyond EVERY existing entry
 input double   InpMaxLot              = 1.00;   // Hard cap on single recovery lot (1.00 lot)
 input double   InpMaxBasketLots       = 0.0;    // Basket lot cap (0 = OFF / Uncapped — prevents getting stuck in holding state)
@@ -73,12 +73,12 @@ input int      InpTrendSlowEMA        = 50;
 input group "=== Anti-Churn / No Hanging Trades ==="
 input bool     InpOneTradePerTick     = true;   // Close extras if >1 position opens on one tick
 input int      InpCooldownSec         = 5;      // Wait 5s after a close before re-arming (fast cycle restart)
-input int      InpBreakEvenAfterMin   = 30;     // After 30m in hedge/red, exit at Break-Even ($0) to avoid chop
+input int      InpBreakEvenAfterMin   = 15;     // After 15m in hedge, exit at Break-Even ($0) to avoid chop
 input int      InpForceCloseAfterMin  = 0;      // Hard time stop (0 = off)
 input bool     InpUseTrailingNet      = true;   // Recovery phase: trailing net lock on hedged basket
-input double   InpTrailingNetRatio    = 0.50;   // Trailing starts early when recovery peak >= target * 50%
+input double   InpTrailingNetRatio    = 0.35;   // Trailing starts when recovery peak >= $2.00
 input bool     InpHedgeFastExit       = true;   // Hedged basket (both sides open): close at reduced target
-input double   InpHedgeExitRatio      = 0.60;   // Hedged basket target = scaled TP * 60% (fast exit)
+input double   InpHedgeExitRatio      = 0.25;   // Hedged basket target = $3.75 (lightning fast exit)
 
 //--- Spread / gap ---------------------------------------------------
 input group "=== Spread / Gap Filter ==="
@@ -1065,15 +1065,16 @@ double CloseTarget()
    }
    int legs = buys + sells;
 
-   // Smart Ping-Pong & Time-Decay Exit:
+   // Lightning-Fast Hedged Escape & Time-Decay Exit:
    if(buys > 0 && sells > 0)
    {
-      if(age >= 20)
-         t = MathMax(t * 0.25, 2.00); // 20m+ chop: drop target to $2-$3 for instant exit
-      else if(age >= 10)
-         t = MathMax(t * 0.50, 4.00); // 10m+ chop: drop target to $4-$7
+      t = 3.50; // Hedged basket: quick $3.50 escape target!
+      if(age >= 15)
+         t = 0.00; // 15m+ in hedge: exit at Breakeven ($0)
+      else if(age >= 8)
+         t = 1.50; // 8m+ in hedge: exit at $1.50
       else if(legs >= 3)
-         t = MathMax(t * 0.50, 5.00); // 3 legs open: quick escape target
+         t = 2.50; // 3+ legs open: $2.50 instant escape
    }
    else if(InpScaleTPWithLegs && m_phase == "RECOVERY")
    {
