@@ -1084,7 +1084,8 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Floating loss when the reverse stop hits
    double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
 
-   double target = InpCloseProfitUSD;
+   // Target for hedged recovery
+   double target = (buyLot > 0 && sellLot > 0) ? 3.50 : InpCloseProfitUSD;
    if(target < 0.02) target = 0.02;
    target += SpreadCostUSD(totalLots + InpStartLot);
 
@@ -1092,17 +1093,17 @@ double RecoveryLot(int recDir, double net, double distToHit,
    double denom = move * vpp;
    if(denom < 0.01) denom = 0.01;
 
-   // Recovery lot required to overcome loss and reach TP
-   double lot = (target - lossAtFill) / denom + MathAbs(signedVol);
-
-   // The opposite active volume that we must overcome:
+   // Active volumes
    double oppVol = (recDir > 0) ? sellLot : buyLot;
    double myVol  = (recDir > 0) ? buyLot  : sellLot;
 
-   // HARD GUARANTEE: The new lot MUST make our side strictly dominant!
-   // (myVol + lot) MUST exceed oppVol to generate net profit on market movement
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.6 - myVol + InpStartLot) : (InpStartLot * 2.0);
-   if(minRequiredLot < InpStartLot) minRequiredLot = InpStartLot * 2.0;
+   // Exact Mathematical Lot Equation:
+   // newLot * denom + (myVol - oppVol) * denom + lossAtFill = target
+   double lot = (target - lossAtFill) / denom + (oppVol - myVol);
+
+   // Minimum lot floor: must at least be InpStartLot, and guarantee net dominance
+   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.4 - myVol + InpStartLot) : InpStartLot;
+   if(minRequiredLot < InpStartLot) minRequiredLot = InpStartLot;
 
    if(lot < minRequiredLot) lot = minRequiredLot;
 
