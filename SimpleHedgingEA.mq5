@@ -68,7 +68,7 @@ input double   InpAccelDistRatio      = 0.65;   // Recovery acceleration distanc
 input bool     InpBreakoutRecovery    = false;  // Breakout Recovery OFF (prevents chop zone whipsaws)
 
 input group "=== Trend Filter (recover only WITH the trend) ==="
-input bool     InpUseTrendFilter      = true;   // Block recovery legs that fight the higher-TF trend
+input bool     InpUseTrendFilter      = false;  // Trend filter OFF (NEVER block recovery hedges — all losing trades must be hedged!)
 input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M15;
 input int      InpTrendFastEMA        = 20;
 input int      InpTrendSlowEMA        = 50;
@@ -1099,7 +1099,7 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
    if(InpMaxBasketLots > 0 && totalLots >= InpMaxBasketLots - 0.0005)
       return false;
 
-   if(InpUseTrendFilter)
+   if(InpUseTrendFilter && pos > 1)
    {
       int td = TrendDir();
       if(td != 0 && recDir != td)
