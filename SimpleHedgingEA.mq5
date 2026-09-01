@@ -352,30 +352,6 @@ void OnTick()
       }
    }
 
-   //=== PHASE 2B: BREAKOUT RECOVERY ===================================
-   if(m_phase == "BREAKOUT")
-   {
-      if(net < 0) { if(m_redSince == 0) m_redSince = TimeCurrent(); }
-      else m_redSince = 0;
-
-      double btarget = CloseTarget();
-      if(net >= btarget)
-      {
-         PrintFormat(">>> [BREAKOUT CLOSE] net $%.2f >= target $%.2f", net, btarget);
-         DeletePendings();
-         m_closingInProgress = true;
-         m_placeAfterClose   = true;
-         ProcessClose();
-         m_prevPosCount = CountPos();
-         DrawVisual();
-         return;
-      }
-      HandleBreakoutRecovery(buys, sells, buyLot, sellLot, net, pos);
-      m_prevPosCount = pos;
-      DrawVisual();
-      return;
-   }
-
    //=== PHASE 2: RECOVERY =============================================
    if(net < 0)
    {
@@ -386,25 +362,13 @@ void OnTick()
 
    target = CloseTarget();
 
-   // Check for range breakout -> BREAKOUT phase transition
-   if(InpBreakoutRecovery && buys > 0 && sells > 0)
-      CheckRangeBreakout(buyLot, sellLot, net);
-
-   if(m_phase == "BREAKOUT")
+   // Hedge Fast-Exit: if both sides open and net reaches fast target ($3.50), exit instantly
+   if(buys > 0 && sells > 0)
    {
-      m_prevPosCount = pos;
-      DrawVisual();
-      return;
-   }
-
-   // Hedge Fast-Exit: if both sides open and near target, exit early
-   if(InpHedgeFastExit && buys > 0 && sells > 0)
-   {
-      double hedgeTarget = target * MathMax(InpHedgeExitRatio, 0.10);
-      if(hedgeTarget < 0.01) hedgeTarget = 0.01;
+      double hedgeTarget = target;
       if(net >= hedgeTarget)
       {
-         PrintFormat(">>> [HEDGE EXIT] net $%.2f >= hedge target $%.2f", net, hedgeTarget);
+         PrintFormat(">>> [HEDGE EXIT] net $%.2f >= hedge target $%.2f — RECOVERED & CLOSED", net, hedgeTarget);
          DeletePendings();
          m_closingInProgress = true;
          m_placeAfterClose   = true;
