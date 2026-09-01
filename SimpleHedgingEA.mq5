@@ -10,18 +10,14 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 10 BuyStop + 10 SellStop, 0.05 each (XAUUSD default).          |
-//|   2. First fill wins -> opposite-side pendings DELETED.          |
-//|      Same-dir pendings KEPT -> PHASE 1: TRENDING.               |
-//|   3. TRENDING: more same-dir fills (one/tick), peak tracked,     |
-//|      trailing net protects. Trail fires -> profit locked.        |
-//|   4. TRENDING -> RECOVERY: net <= -FirstTrigger.                 |
-//|      Remaining same-dir pending cancelled. ONE opposite stop.   |
-//|   5. RECOVERY: basket TP / trailing / hedge fast-exit.           |
-//|      If price escapes entry range -> PHASE 2B: BREAKOUT.         |
-//|   6. BREAKOUT: opposite recovery stop deleted. BuyStop beyond    |
-//|      entry_high armed. Trail net -> profit locked.               |
-//|   7. Close -> cooldown -> re-arm.                                |
+//|   1. Flat  -> arm 1 BuyStop + 1 SellStop, 0.05 each.             |
+//|   2. First fill wins -> opposite pending DELETED, replaced       |
+//|      IMMEDIATELY by calculated Reverse Recovery Stop.            |
+//|   3. TRENDING: rides to Target TP ($15) or Trailing Net.         |
+//|   4. REVERSAL: standing reverse stop triggers with exact lot,    |
+//|      instantly arms next reverse stop on opposite side.          |
+//|   5. PING-PONG & TIME DECAY: smart target decay exits in profit. |
+//|   6. Close -> Next Candle Filter -> re-arm.                      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
