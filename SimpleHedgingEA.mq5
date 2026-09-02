@@ -267,38 +267,27 @@ void OnTick()
 
       if(TimeCurrent() < m_cooldownUntil)
       {
-         if(buyPend + sellPend > 0)
-            DeletePendings();
-         m_state = StringFormat("COOLDOWN %ds", (int)(m_cooldownUntil - TimeCurrent()));
+         m_state = "COOLDOWN";
          DrawVisual();
          return;
       }
 
-      // Check New Candle filter: never re-arm on the same candle where a trade closed!
-      datetime curBar = iTime(_Symbol, _Period, 0);
-      if(m_closedBarTime > 0 && curBar == m_closedBarTime)
+      // Next Candle Entry Filter: wait for fresh candle
+      datetime currentBarTime = iTime(_Symbol, _Period, 0);
+      if(m_closedBarTime != 0 && currentBarTime == m_closedBarTime)
       {
-         if(buyPend + sellPend > 0)
-            DeletePendings();
-         m_state = "WAITING NEW CANDLE (same bar close)";
+         m_state = "WAITING FOR NEXT CANDLE";
          DrawVisual();
          return;
       }
 
-      // If there are orphan/leftover pendings from old cycles, wipe them clean before fresh arming!
-      int wanted = MathMax(InpMaxGridLevels, 1) * 2;
-      if(buyPend + sellPend > 0 && buyPend + sellPend < wanted)
-      {
-         DeletePendings();
-         buyPend  = 0;
-         sellPend = 0;
-      }
+      ResetCycleState();
 
-      if(buyPend + sellPend == 0)
+      if(buyPend == 0 || sellPend == 0)
       {
          if(TimeCurrent() < m_armRetryUntil)
          {
-            m_state = "ARM BACKOFF (last arm was rejected)";
+            m_state = "ARM RETRY BACKOFF";
             DrawVisual();
             return;
          }
@@ -308,19 +297,20 @@ void OnTick()
             DrawVisual();
             return;
          }
-         PrintFormat("[ARM] %d BuyStop + %d SellStop @ %.2f (step %.*f)",
-                     InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
+         DeletePendings();
+         PrintFormat("[ARM] 1 BuyStop + 1 SellStop @ %.2f (step %.*f)",
+                     InpStartLot, _Digits, GridStep());
          int placed = PlaceGrid(ORDER_TYPE_BUY_STOP) + PlaceGrid(ORDER_TYPE_SELL_STOP);
-         if(placed < wanted)
+         if(placed < 2)
          {
-            m_armRetryUntil = TimeCurrent() + 30;
-            PrintFormat("[ARM PARTIAL] only %d/%d placed — backing off 30s", placed, wanted);
+            m_armRetryUntil = TimeCurrent() + 5;
+            PrintFormat("[ARM PARTIAL] only %d/2 placed — retrying in 5s", placed);
          }
       }
       else if(WideSpread() || m_gapMode)
          StretchPendingsFarther();
 
-      m_state = "ARMED — dual 20x20 grid standing";
+      m_state = "ARMED — BuyStop + SellStop standing";
       DrawVisual();
       return;
    }
