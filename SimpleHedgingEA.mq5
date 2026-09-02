@@ -317,16 +317,13 @@ void OnTick()
    else if(m_phase == "IDLE")
    {
       m_trendDir = (buys >= sells) ? 1 : -1;
-      m_phase    = InpTrendRide ? "TRENDING" : "RECOVERY";
-      // Delete opposite-side pendings immediately; keep same-dir
-      DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP);
-      ClearAllTP(); // Clear any broker-side TP so position isn't prematurely killed
-      PrintFormat("[PHASE->%s] dir=%s, opposite pendings deleted",
+      m_phase    = "TRENDING";
+      ClearAllTP();
+      PrintFormat("[PHASE->%s] dir=%s, dual 20-grid active",
                   m_phase, m_trendDir > 0 ? "BUY" : "SELL");
    }
 
-   //=== PHASE 1: TRENDING / LIVE TRADING =============================
-   // Check Basket Target TP
+   //=== GLOBAL BASKET TARGET CHECK ====================================
    double target = CloseTarget();
    if(net >= target)
    {
@@ -344,9 +341,6 @@ void OnTick()
    {
       if(HandleTrendingPhase(buys, sells, buyLot, sellLot, net, pos))
       {
-         // Always keep the reverse recovery stop armed even during trending!
-         int activeDir = ActiveDir();
-         SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
          m_prevPosCount = CountPos();
          DrawVisual();
          return;
@@ -1301,6 +1295,23 @@ double SpreadPadDist()
 }
 
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+double GridLotForLevel(int level)
+{
+   double lot = InpStartLot;
+   if(level >= 18)      lot = InpStartLot * 18.0; // 0.18 lot
+   else if(level >= 15) lot = InpStartLot * 12.0; // 0.12 lot
+   else if(level >= 12) lot = InpStartLot * 8.0;  // 0.08 lot
+   else if(level >= 9)  lot = InpStartLot * 5.0;  // 0.05 lot
+   else if(level >= 6)  lot = InpStartLot * 3.0;  // 0.03 lot
+   else if(level >= 3)  lot = InpStartLot * 2.0;  // 0.02 lot
+   else                 lot = InpStartLot * 1.0;  // 0.01 lot
+
+   if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
+   return NormalizeLot(lot);
+}
+
+//+------------------------------------------------------------------+
 int PlaceGrid(ENUM_ORDER_TYPE type)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1320,15 +1331,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    for(int i = 0; i < n; i++)
    {
-      // Dynamic multi-tier lot scaling:
-      // Early 4 levels start at 0.01 lot, then scale gradually
-      double lot = InpStartLot;
-      if(i >= 16)      lot = NormalizeLot(InpStartLot * 5.0);
-      else if(i >= 12) lot = NormalizeLot(InpStartLot * 4.0);
-      else if(i >= 8)  lot = NormalizeLot(InpStartLot * 3.0);
-      else if(i >= 4)  lot = NormalizeLot(InpStartLot * 2.0);
-      else             lot = NormalizeLot(InpStartLot);
-
+      double lot = GridLotForLevel(i);
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
