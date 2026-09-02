@@ -63,7 +63,7 @@ input bool     InpBreakoutRecovery    = false;  // Breakout Recovery Mode
 
 //--- Trend Filter ---------------------------------------------------
 input group "=== Trend Filter ==="
-input bool     InpUseTrendFilter      = false;  // Enable Trend Filter
+input bool     InpUseTrendFilter      = false;  // Pure Dual-Side Hedging (No directional bias)
 input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M15; // Trend Filter Timeframe
 input int      InpTrendFastEMA        = 20;     // Fast EMA Period
 input int      InpTrendSlowEMA        = 50;     // Slow EMA Period
