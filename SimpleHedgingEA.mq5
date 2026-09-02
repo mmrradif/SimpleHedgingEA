@@ -452,9 +452,8 @@ bool HandleTrendingPhase(int buys, int sells, double buyLot, double sellLot,
    if(m_trailActive)
    {
       double floor = m_trendPeakNet * (1.0 - InpTrendTrailRatio);
-      // HARD GUARANTEE: Never close on trail below a minimum positive profit floor!
-      double minFloor = MathMax(InpTrendMinPeak * 0.50, 3.00); // At least $3.00 or 50% of MinPeak
-      if(floor < minFloor) floor = minFloor;
+      if(floor > m_trendPeakNet - 0.20) floor = m_trendPeakNet - 0.20;
+      if(floor < 0.50) floor = 0.50; // Lock at least +$0.50 profit
 
       m_state = StringFormat("TRENDING #%d — peak=$%.2f  floor=$%.2f  now=$%.2f",
                              sameDirPos, m_trendPeakNet, floor, net);
@@ -759,8 +758,11 @@ void SyncSinglePending(int activeDir, int buys, int sells,
    ENUM_ORDER_TYPE recType  = (recDir > 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
    ENUM_ORDER_TYPE deadType = (recDir > 0) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
 
-   // anything pointing the wrong way dies right now
-   DeleteAllOfType(deadType);
+   // In TRENDING phase with TrendRide active, keep same-dir pendings to ride the trend
+   if(!InpTrendRide || m_phase == "RECOVERY")
+   {
+      DeleteAllOfType(deadType);
+   }
 
    if(!WantRecovery(pos, net, recDir, buyLot + sellLot))
    {
@@ -774,8 +776,12 @@ void SyncSinglePending(int activeDir, int buys, int sells,
    CollectPendings(recType, t, p);
    SortPendings(recType, t, p);
    int have = ArraySize(t);
-   for(int i = 1; i < have; i++)      // only ONE may live
-      m_trade.OrderDelete(t[i]);
+
+   if(m_phase == "RECOVERY")
+   {
+      for(int i = 1; i < have; i++)      // only ONE recovery stop during recovery phase
+         m_trade.OrderDelete(t[i]);
+   }
 
    double minDist = MinDist();
    double revDist = ReverseMinDist();
