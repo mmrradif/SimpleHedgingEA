@@ -727,8 +727,7 @@ void EnforceOnePerTick()
 }
 
 //+------------------------------------------------------------------+
-//| GUARD 2 — exactly zero or one pending while a position is open.  |
-//| The only pending allowed is the recovery leg on the opposite side.|
+//| GUARD 2 — sync opposite recovery pending leg                     |
 //+------------------------------------------------------------------+
 void SyncSinglePending(int activeDir, int buys, int sells,
                        double buyLot, double sellLot, double net)
@@ -738,6 +737,12 @@ void SyncSinglePending(int activeDir, int buys, int sells,
       DeletePendings();
       return;
    }
+
+   static datetime s_recBackoff = 0;
+   if(TimeCurrent() < s_recBackoff) return;
+
+   if(WideSpread() || m_gapMode || SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+      return;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1350,44 +1355,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 //+------------------------------------------------------------------+
 void StretchPendingsFarther()
 {
-   static datetime lastStretch = 0;
-   if(TimeCurrent() - lastStretch < 15) return;
-   lastStretch = TimeCurrent();
-
-   if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED) return;
-
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   if(ask <= 0 || bid <= 0) return;
-   double step    = GridStep();
-   double minDist = MinDist();
-   double tol     = step * 0.25;
-
-   ulong  bt[], st[];
-   double bp[], sp[];
-   CollectPendings(ORDER_TYPE_BUY_STOP,  bt, bp);
-   CollectPendings(ORDER_TYPE_SELL_STOP, st, sp);
-   SortPendings(ORDER_TYPE_BUY_STOP,  bt, bp);
-   SortPendings(ORDER_TYPE_SELL_STOP, st, sp);
-
-   for(int i = 0; i < ArraySize(bt); i++)
-   {
-      double want = ask + step * (i + 1);
-      if(want < ask + minDist) want = ask + minDist;
-      want = NormalizeDouble(want, _Digits);
-      if(!OrderSelect(bt[i])) continue;
-      if(want <= OrderGetDouble(ORDER_PRICE_OPEN) + tol) continue;
-      m_trade.OrderModify(bt[i], want, 0, 0, ORDER_TIME_GTC, 0);
-   }
-   for(int i = 0; i < ArraySize(st); i++)
-   {
-      double want = bid - step * (i + 1);
-      if(want > bid - minDist) want = bid - minDist;
-      want = NormalizeDouble(want, _Digits);
-      if(!OrderSelect(st[i])) continue;
-      if(want >= OrderGetDouble(ORDER_PRICE_OPEN) - tol) continue;
-      m_trade.OrderModify(st[i], want, 0, 0, ORDER_TIME_GTC, 0);
-   }
+   // No-op: Standing stops remain stationary until spread normalizes
 }
 
 //+------------------------------------------------------------------+
