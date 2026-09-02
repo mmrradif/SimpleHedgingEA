@@ -10,13 +10,13 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 20 BuyStop + 20 SellStop, 0.01-0.06 micro-lots.|
-//|   2. First fill wins -> dual 20-grid active -> TREND RIDING.     |
-//|   3. TRENDING: sequential fills ride trend, peak tracked,        |
-//|      trailing net locks profits, all open until TP!              |
-//|   4. REVERSAL: opposite grid catches reversals with dominant lot |
-//|      to turn basket into net profit.                             |
-//|   5. PING-PONG & TIME DECAY: fast escape targets ($2.50 -> $0).  |
+//|   1. Flat  -> arm 1 BuyStop + 1 SellStop @ 0.01 lot.             |
+//|   2. First fill -> opposite initial stop deleted, dynamic        |
+//|      calculated dominant recovery stop armed immediately.        |
+//|   3. TRENDING: rides single trade to TP ($5) or Trailing Net.    |
+//|   4. REVERSAL: standing reverse stop triggers with dominant lot, |
+//|      guaranteeing net asymmetric volume to exit in profit!       |
+//|   5. FAST ESCAPE & TIME DECAY: hedged basket exits at +$2.50.    |
 //|   6. Close -> Next Candle Filter -> re-arm.                      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
@@ -41,7 +41,7 @@ input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fract
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 20;     // BuyStops and SellStops (20 BuyStop + 20 SellStop multi-level grid for $5000 balance)
+input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop initial entry (Zero overstacking risk!)
 input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low margin
 input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
@@ -417,6 +417,11 @@ void OnTick()
       DrawVisual();
       return;
    }
+
+   int activeDir = ActiveDir();
+
+   // Dynamic Asymmetric Protection: ensure calculated dominant recovery stop is always standing
+   SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
 
    //=== Shared basket TP only in RECOVERY phase =======================
    if(InpUseBasketTP && m_phase == "RECOVERY")
@@ -1327,6 +1332,7 @@ double GridLotForLevel(int level)
 }
 
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 int PlaceGrid(ENUM_ORDER_TYPE type)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1335,7 +1341,8 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = MathMax(InpMaxGridLevels, 1);
+   int    n       = 1; // Strictly 1 BuyStop + 1 SellStop initial entry
+   double lot     = NormalizeLot(InpStartLot);
    int    placed  = 0;
 
    // Minimum safety gap: at least 2.5x spread and at least 50 points/ticks
@@ -1346,7 +1353,6 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    for(int i = 0; i < n; i++)
    {
-      double lot = GridLotForLevel(i);
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
@@ -1362,8 +1368,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
          price = NormalizeDouble(price, _Digits);
          if(price >= bid) continue;
       }
-      if(SendPendingSafe(type, lot, price, StringFormat("%s #%d",
-                         (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
+      if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop")))
          placed++;
    }
    return placed;
