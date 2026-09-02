@@ -10,8 +10,8 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 5 BuyStop + 5 SellStop, 0.01 lot ($5000 safe). |
-//|   2. First fill wins -> dual grid active -> TREND RIDING.        |
+//|   1. Flat  -> arm 20 BuyStop + 20 SellStop, 0.01-0.06 micro-lots.|
+//|   2. First fill wins -> dual 20-grid active -> TREND RIDING.     |
 //|   3. TRENDING: sequential fills ride trend, peak tracked,        |
 //|      trailing net locks profits, all open until TP!              |
 //|   4. REVERSAL: opposite grid catches reversals with dominant lot |
@@ -41,7 +41,7 @@ input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fract
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 5;      // BuyStops and SellStops (5 BuyStop + 5 SellStop low-risk grid for $5000 balance)
+input int      InpMaxGridLevels       = 20;     // BuyStops and SellStops (20 BuyStop + 20 SellStop multi-level grid for $5000 balance)
 input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low margin
 input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
@@ -1297,14 +1297,20 @@ double SpreadPadDist()
 //+------------------------------------------------------------------+
 double GridLotForLevel(int level)
 {
-   // Safe low-margin progression for $5000 account:
-   // Level 1-4: 0.01 lot
-   // Level 5-6: 0.02 lot
-   // Level 7+:  0.03 lot
+   // 20-level smooth micro-lot progression safe for $5000 balance:
+   // Levels 0-5  (1st to 6th stop):   0.01 lot
+   // Levels 6-10 (7th to 11th stop):  0.02 lot
+   // Levels 11-13 (12th to 14th stop): 0.03 lot
+   // Levels 14-15 (15th to 16th stop): 0.04 lot
+   // Levels 16-17 (17th to 18th stop): 0.05 lot
+   // Levels 18-19 (19th to 20th stop): 0.06 lot
    double lot = InpStartLot;
-   if(level >= 6)      lot = InpStartLot * 3.0; // 0.03 lot
-   else if(level >= 4) lot = InpStartLot * 2.0; // 0.02 lot
-   else                lot = InpStartLot * 1.0; // 0.01 lot (levels 0 to 3 are 0.01!)
+   if(level >= 18)      lot = InpStartLot * 6.0; // 0.06 lot
+   else if(level >= 16) lot = InpStartLot * 5.0; // 0.05 lot
+   else if(level >= 14) lot = InpStartLot * 4.0; // 0.04 lot
+   else if(level >= 11) lot = InpStartLot * 3.0; // 0.03 lot
+   else if(level >= 6)  lot = InpStartLot * 2.0; // 0.02 lot
+   else                 lot = InpStartLot * 1.0; // 0.01 lot (first 6 stops!)
 
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
    return NormalizeLot(lot);
