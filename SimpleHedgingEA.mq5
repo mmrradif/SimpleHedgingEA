@@ -57,8 +57,8 @@ input int      InpReverseAfterSec     = 300;    // ...or after this long in the 
 input double   InpReverseDistUSD      = 3.00;   // Reversal stop distance — $3.00 chart gap (wide & safe)
 input double   InpRecoverMoveUSD      = 4.00;   // Recovery move target — $4.00 chart move
 input bool     InpBeyondAllEntries    = true;   // Reversal must sit beyond EVERY existing entry
-input double   InpMaxLot              = 1.00;   // Hard cap on single recovery lot (1.00 lot)
-input double   InpMaxBasketLots       = 0.0;    // Basket lot cap (0 = OFF / Uncapped — prevents getting stuck in holding state)
+input double   InpMaxLot              = 0.35;   // Hard cap on single recovery lot (0.35 max for $5000 balance safety)
+input double   InpMaxBasketLots       = 0.0;    // Basket lot cap (0 = OFF / Uncapped)
 input int      InpMaxRecoveryLegs     = 10;     // Max recovery legs (10 legs — ample headroom to resolve any market chop)
 input int      InpRecoveryAccelMin    = 3;      // Minutes unfilled -> bring stop closer (0 = off)
 input double   InpAccelDistRatio      = 0.65;   // Recovery acceleration distance ratio (65%)
@@ -1091,7 +1091,7 @@ double RecoveryLot(int recDir, double net, double distToHit,
    double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
 
    // Target for hedged recovery
-   double target = (buyLot > 0 && sellLot > 0) ? 3.50 : InpCloseProfitUSD;
+   double target = (buyLot > 0 && sellLot > 0) ? 2.50 : InpCloseProfitUSD;
    if(target < 0.02) target = 0.02;
    target += SpreadCostUSD(totalLots + InpStartLot);
 
@@ -1104,16 +1104,16 @@ double RecoveryLot(int recDir, double net, double distToHit,
    double myVol  = (recDir > 0) ? buyLot  : sellLot;
 
    // Exact Mathematical Lot Equation:
-   // newLot * denom + (myVol - oppVol) * denom + lossAtFill = target
    double lot = (target - lossAtFill) / denom + (oppVol - myVol);
 
-   // Minimum lot floor: must at least be InpStartLot, and guarantee net dominance
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.4 - myVol + InpStartLot) : InpStartLot;
+   // Minimum required lot to ensure net dominance
+   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.3 - myVol + InpStartLot) : (InpStartLot * 2.0);
    if(minRequiredLot < InpStartLot) minRequiredLot = InpStartLot;
 
    if(lot < minRequiredLot) lot = minRequiredLot;
 
-   if(InpMaxLot > 0 && lot > InpMaxLot && InpMaxLot >= minRequiredLot) 
+   // STRICT HARD CEILING: Never exceed InpMaxLot under any circumstance!
+   if(InpMaxLot > 0 && lot > InpMaxLot) 
       lot = InpMaxLot;
 
    if(lot < InpStartLot) lot = InpStartLot;
