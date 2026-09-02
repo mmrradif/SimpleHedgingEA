@@ -1078,37 +1078,35 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
 //+------------------------------------------------------------------+
 //| R >= (target - L)/(move*vpp) - dir*signedVol                     |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Progressive Micro-Lot Recovery Scaling                           |
+//| Leg 1 (Initial): 0.01                                            |
+//| Leg 2 (1st Rec): 0.02                                            |
+//| Leg 3 (2nd Rec): 0.04                                            |
+//| Leg 4 (3rd Rec): 0.07                                            |
+//| Leg 5 (4th Rec): 0.11                                            |
+//| Leg 6 (5th Rec): 0.16                                            |
+//+------------------------------------------------------------------+
 double RecoveryLot(int recDir, double net, double distToHit,
                    double buyLot, double sellLot, double totalLots)
 {
-   double vpp       = ValuePerPrice();
-   double signedVol = buyLot - sellLot;
-   if(distToHit < 0) distToHit = 0;
+   int legs = CountPos();
+   double lot = InpStartLot;
 
-   // Floating loss when the reverse stop hits
-   double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
+   // Progressive smooth step-by-step scaling:
+   if(legs <= 1)      lot = InpStartLot * 2.0;  // 0.02 lot (1st Recovery)
+   else if(legs == 2) lot = InpStartLot * 4.0;  // 0.04 lot (2nd Recovery)
+   else if(legs == 3) lot = InpStartLot * 7.0;  // 0.07 lot (3rd Recovery)
+   else if(legs == 4) lot = InpStartLot * 11.0; // 0.11 lot (4th Recovery)
+   else if(legs == 5) lot = InpStartLot * 16.0; // 0.16 lot (5th Recovery)
+   else if(legs == 6) lot = InpStartLot * 22.0; // 0.22 lot (6th Recovery)
+   else               lot = InpStartLot * 30.0; // 0.30 lot (7th+ Recovery)
 
-   // Target for hedged recovery
-   double target = (buyLot > 0 && sellLot > 0) ? 2.50 : InpCloseProfitUSD;
-   if(target < 0.02) target = 0.02;
-   target += SpreadCostUSD(totalLots + InpStartLot);
-
-   double move  = RecoverMovePrice();
-   double denom = move * vpp;
-   if(denom < 0.01) denom = 0.01;
-
-   // Active volumes
+   // Ensure the new lot guarantees net dominance over opposing volume
    double oppVol = (recDir > 0) ? sellLot : buyLot;
    double myVol  = (recDir > 0) ? buyLot  : sellLot;
-
-   // Exact Mathematical Lot Equation:
-   double lot = (target - lossAtFill) / denom + (oppVol - myVol);
-
-   // Minimum required lot to guarantee net dominance (at least 2.0x opposing volume + InpStartLot)
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 2.0 + InpStartLot - myVol) : (InpStartLot * 2.0);
-   if(minRequiredLot < InpStartLot * 2.0) minRequiredLot = InpStartLot * 2.0;
-
-   if(lot < minRequiredLot) lot = minRequiredLot;
+   if(lot + myVol < oppVol * 1.3)
+      lot = oppVol * 1.3 - myVol + InpStartLot;
 
    // STRICT HARD CEILING: Never exceed InpMaxLot under any circumstance!
    if(InpMaxLot > 0 && lot > InpMaxLot) 
