@@ -254,7 +254,18 @@ void OnTick()
    if(pos == 0)
    {
       ResetCycleState();
-      m_prevPosCount = 0;
+
+      // If position count just dropped to 0 (hit TP or closed), DELETE ALL LEFTOVER PENDINGS IMMEDIATELY!
+      if(m_prevPosCount > 0)
+      {
+         DeletePendings();
+         m_cooldownUntil = TimeCurrent() + InpCooldownSec;
+         m_closedBarTime = iTime(_Symbol, _Period, 0);
+         m_prevPosCount = 0;
+         Print("[CYCLE CLOSED] Target TP hit -> All leftover pendings deleted! Waiting for next candle");
+         DrawVisual();
+         return;
+      }
 
       if(TimeCurrent() < m_cooldownUntil)
       {
@@ -276,6 +287,15 @@ void OnTick()
          return;
       }
 
+      // If there are orphan/leftover pendings from old cycles, wipe them clean before fresh arming!
+      int wanted = MathMax(InpMaxGridLevels, 1) * 2;
+      if(buyPend + sellPend > 0 && buyPend + sellPend < wanted)
+      {
+         DeletePendings();
+         buyPend  = 0;
+         sellPend = 0;
+      }
+
       if(buyPend + sellPend == 0)
       {
          if(TimeCurrent() < m_armRetryUntil)
@@ -293,7 +313,6 @@ void OnTick()
          PrintFormat("[ARM] %d BuyStop + %d SellStop @ %.2f (step %.*f)",
                      InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
          int placed = PlaceGrid(ORDER_TYPE_BUY_STOP) + PlaceGrid(ORDER_TYPE_SELL_STOP);
-         int wanted = MathMax(InpMaxGridLevels, 1) * 2;
          if(placed < wanted)
          {
             m_armRetryUntil = TimeCurrent() + 30;
@@ -303,7 +322,7 @@ void OnTick()
       else if(WideSpread() || m_gapMode)
          StretchPendingsFarther();
 
-      m_state = "ARMED — first fill wins, opposite side cancelled";
+      m_state = "ARMED — dual 20x20 grid standing";
       DrawVisual();
       return;
    }
