@@ -41,10 +41,10 @@ input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
 input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
-input double   InpGridStepUSD         = 3.50;   // Grid Step Distance ($3.50 chart move - high frequency!)
+input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
-input double   InpAtrMult             = 1.5;    // ATR Multiplier (News Volatility Shield)
+input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Reversal & Recovery ==="
@@ -54,7 +54,7 @@ input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
 input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
 input double   InpRecoverMoveUSD      = 3.50;   // Fast Recovery Move Target ($3.50 chart move)
 input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Prevents rapid leg stacking!)
-input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
+input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35 - Dominant Recovery Sizing)
 input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
