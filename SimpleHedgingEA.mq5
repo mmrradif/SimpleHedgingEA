@@ -39,7 +39,7 @@ input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fract
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 20;     // Pre-placed Grid Levels on each side (20 BuyStops + 20 SellStops standing in advance)
+input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop initial entry (Zero overstacking risk! Ultra low DD)
 input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low margin
 input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
@@ -334,8 +334,10 @@ void OnTick()
    {
       m_trendDir = (buys >= sells) ? 1 : -1;
       m_phase    = "TRENDING";
+      // Cancel initial opposite pending immediately so it gets replaced by the dynamic recovery stop!
+      DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP);
       ClearAllTP();
-      PrintFormat("[PHASE->%s] dir=%s, pre-placed dual matrix active",
+      PrintFormat("[PHASE->%s] dir=%s, initial opposite pending cancelled",
                   m_phase, m_trendDir > 0 ? "BUY" : "SELL");
    }
 
@@ -415,6 +417,11 @@ void OnTick()
       DrawVisual();
       return;
    }
+
+   int activeDir = ActiveDir();
+
+   // Dynamic Asymmetric Protection: maintain single calculated recovery stop
+   SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
 
    //=== Shared basket TP only in RECOVERY phase =======================
    if(InpUseBasketTP && m_phase == "RECOVERY")
@@ -1330,6 +1337,7 @@ double GridLotForLevel(int level)
 }
 
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 int PlaceGrid(ENUM_ORDER_TYPE type)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1338,7 +1346,8 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = MathMax(InpMaxGridLevels, 1);
+   int    n       = 1; // Strictly 1 BuyStop + 1 SellStop initial entry
+   double lot     = NormalizeLot(InpStartLot);
    int    placed  = 0;
 
    // Minimum safety gap: at least 2.5x spread and at least 50 points/ticks
@@ -1349,7 +1358,6 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    for(int i = 0; i < n; i++)
    {
-      double lot = GridLotForLevel(i);
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
@@ -1365,8 +1373,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
          price = NormalizeDouble(price, _Digits);
          if(price >= bid) continue;
       }
-      if(SendPendingSafe(type, lot, price, StringFormat("%s #%d",
-                         (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
+      if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop")))
          placed++;
    }
    return placed;
