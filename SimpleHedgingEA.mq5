@@ -25,77 +25,69 @@
 #include <Trade\Trade.mqh>
 
 //--- Profit ---------------------------------------------------------
-input group "=== Profit ==="
-input double   InpCloseProfitUSD      = 5.00;   // Basket TP target ($ net) — $5.00 for XAUUSD 0.01 lot ($5 gold move)
-input bool     InpUseBasketTP         = true;   // Write a shared TP price on every position
-input bool     InpScaleTPWithLegs     = true;   // Scale TP up with recovery depth
-input double   InpTPScaleFactor       = 0.50;   // Per recovery leg TP increase (0.50 = +50% per leg)
+input group "=== Profit Settings ==="
+input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($ USD)
+input bool     InpUseBasketTP         = true;   // Shared Basket TP
+input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
+input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Trend Riding ==="
-input bool     InpTrendRide           = true;   // Phase 1: allow same-dir fills while trending
-input double   InpTrendMinPeak        = 3.00;   // Minimum peak ($) before trailing activates — $3.00 on 0.01 lot
-input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fraction from peak — 25% (gives room to ride trend)
+input bool     InpTrendRide           = true;   // Trend Riding Mode
+input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
+input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
-//--- Entry grid -----------------------------------------------------
-input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop initial entry (Zero overstacking risk! Ultra low DD)
-input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low margin
-input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
-input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
-input int      InpAtrPeriod           = 14;     // ATR period (M1)
-input double   InpAtrMult             = 1.0;    // Step = ATR * this — 1.0 for XAUUSD
+//--- Entry Grid -----------------------------------------------------
+input group "=== Initial Entry Settings ==="
+input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
+input int      InpMaxGridLevels       = 1;      // Entry Stop Levels (1)
+input double   InpGridStepUSD         = 3.00;   // Grid Step Distance ($ USD)
+input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
+input int      InpAtrPeriod           = 14;     // ATR Period
+input double   InpAtrMult             = 1.0;    // ATR Multiplier
 
 //--- Reversal / recovery --------------------------------------------
-input group "=== Reversal / Recovery ==="
-input double   InpFirstTriggerUSD     = 3.00;   // Recovery trigger 1st leg ($) — $3.00 for 0.01 lot
-input double   InpReverseTriggerUSD   = 5.00;   // Recovery trigger 2nd+ legs ($) — $5.00
-input int      InpReverseAfterSec     = 300;    // ...or after this long in the red (0 = off)
-input double   InpReverseDistUSD      = 3.00;   // Reversal stop distance — $3.00 chart gap (wide & safe)
-input double   InpRecoverMoveUSD      = 4.00;   // Recovery move target — $4.00 chart move
-input bool     InpBeyondAllEntries    = true;   // Reversal must sit beyond EVERY existing entry
-input double   InpMaxLot              = 0.35;   // Hard cap on single recovery lot (0.35 max for $5000 balance safety)
-input double   InpMaxBasketLots       = 0.0;    // Basket lot cap (0 = OFF / Uncapped)
-input int      InpMaxRecoveryLegs     = 10;     // Max recovery legs (10 legs — ample headroom to resolve any market chop)
-input int      InpRecoveryAccelMin    = 3;      // Minutes unfilled -> bring stop closer (0 = off)
-input double   InpAccelDistRatio      = 0.65;   // Recovery acceleration distance ratio (65%)
-input bool     InpBreakoutRecovery    = false;  // Breakout Recovery OFF (prevents chop zone whipsaws)
+input group "=== Reversal & Recovery ==="
+input double   InpFirstTriggerUSD     = 3.00;   // 1st Recovery Trigger ($ USD)
+input double   InpReverseTriggerUSD   = 5.00;   // 2nd+ Recovery Trigger ($ USD)
+input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
+input double   InpReverseDistUSD      = 3.00;   // Recovery Stop Distance ($ USD)
+input double   InpRecoverMoveUSD      = 4.00;   // Recovery Move Target ($ USD)
+input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
+input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
+input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
+input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
+input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
+input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
+input bool     InpBreakoutRecovery    = false;  // Breakout Recovery Mode
 
-input group "=== Trend Filter (recover only WITH the trend) ==="
-input bool     InpUseTrendFilter      = false;  // Trend filter OFF (NEVER block recovery hedges — all losing trades must be hedged!)
-input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M15;
-input int      InpTrendFastEMA        = 20;
-input int      InpTrendSlowEMA        = 50;
+//--- Trend Filter ---------------------------------------------------
+input group "=== Trend Filter ==="
+input bool     InpUseTrendFilter      = false;  // Enable Trend Filter
+input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M15; // Trend Filter Timeframe
+input int      InpTrendFastEMA        = 20;     // Fast EMA Period
+input int      InpTrendSlowEMA        = 50;     // Slow EMA Period
 
-//--- Anti-churn / no hanging trades ---------------------------------
-input group "=== Anti-Churn / No Hanging Trades ==="
-input bool     InpOneTradePerTick     = true;   // Close extras if >1 position opens on one tick
-input int      InpCooldownSec         = 5;      // Wait 5s after a close before re-arming (fast cycle restart)
-input int      InpBreakEvenAfterMin   = 15;     // After 15m in hedge, exit at Break-Even ($0) to avoid chop
-input int      InpForceCloseAfterMin  = 0;      // Hard time stop (0 = off)
-input bool     InpUseTrailingNet      = true;   // Recovery phase: trailing net lock on hedged basket
-input double   InpTrailingNetRatio    = 0.35;   // Trailing starts when recovery peak >= $2.00
-input bool     InpHedgeFastExit       = true;   // Hedged basket (both sides open): close at reduced target
-input double   InpHedgeExitRatio      = 0.25;   // Hedged basket target = $3.75 (lightning fast exit)
-
-//--- Spread / gap ---------------------------------------------------
-input group "=== Spread / Gap Filter ==="
-input double   InpSpreadPad           = 2.0;    // Pending gap must be >= spread * this
-input double   InpWideSpreadPrice     = 1.50;   // Price spread above this = do not arm — $1.50 for XAUUSD
-input double   InpGapUSD              = 20.0;   // Mid-price jump this big = gap mode — $20 for XAUUSD
-
-//--- Protection -----------------------------------------------------
-input group "=== Protection ==="
-input double   InpMaxCycleLossUSD       = 0.0;     // Cycle Circuit Breaker (0 = OFF)
-input double   InpMaxAllowedDrawdownUSD = 5000.0;  // Max DD USD ($5000)
-input double   InpMaxDrawdownPercent    = 50.0;    // Max 50% Drawdown
-input bool     InpCloseFridayNight      = true;    // Close open trades Friday 21:00 GMT to avoid weekend gap
-
-//--- Expert ---------------------------------------------------------
-input group "=== Expert ==="
-input ulong    InpMagicNumber         = 888111;
-input ulong    InpSlippage            = 50;    // Higher slippage tolerance for XAUUSD
-input bool     InpShowVisual          = true;
+//--- Anti-churn / protection ----------------------------------------
+input group "=== Exit & Protection ==="
+input bool     InpOneTradePerTick     = true;   // One Trade Per Tick Lock
+input int      InpCooldownSec         = 5;      // Cooldown Seconds after Exit
+input int      InpBreakEvenAfterMin   = 15;     // Break-Even Exit Timer (Minutes)
+input int      InpForceCloseAfterMin  = 0;      // Hard Time Stop (0 = Off)
+input bool     InpUseTrailingNet      = true;   // Basket Trailing Net Lock
+input double   InpTrailingNetRatio    = 0.35;   // Basket Trailing Ratio
+input bool     InpHedgeFastExit       = true;   // Fast Hedged Exit ($2.50)
+input double   InpHedgeExitRatio      = 0.25;   // Hedged Exit Ratio
+input double   InpSpreadPad           = 2.0;    // Spread Multiplier Padding
+input double   InpWideSpreadPrice     = 1.50;   // Max Allowed Spread ($ USD)
+input double   InpGapUSD              = 20.0;   // Gap Protection Threshold ($ USD)
+input double   InpMaxCycleLossUSD     = 0.0;    // Cycle Max Loss ($ USD)
+input double   InpMaxAllowedDrawdownUSD = 5000.0; // Max Account Drawdown ($ USD)
+input double   InpMaxDrawdownPercent  = 50.0;   // Max Account Drawdown (%)
+input bool     InpCloseFridayNight    = true;   // Friday Night Close (21:00 GMT)
+input ulong    InpMagicNumber         = 888111; // Magic Number
+input ulong    InpSlippage            = 50;     // Slippage Tolerance
+input bool     InpShowVisual          = true;   // Show Chart Dashboard
 
 #define VIS_PREFIX "PincerVis_"
 
