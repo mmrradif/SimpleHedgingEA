@@ -44,4 +44,4 @@ InpMaxDrawdownPercent=0.0
 InpCloseFridayNight=0
 InpMagicNumber=888111
 InpSlippage=50
-InpShowVisual=0
+InpShowVisual=1
