@@ -862,6 +862,7 @@ void SyncSinglePending(int activeDir, int buys, int sells,
    double distToHit = (recDir > 0) ? (price - ask) : (bid - price);
    if(distToHit < 0) distToHit = 0;
    double lot = RecoveryLot(recDir, net, distToHit, buyLot, sellLot, buyLot + sellLot);
+   if(lot < InpStartLot) return; // Basket cap reached, do not send 0 lot order!
 
    bool   snap    = (m_recoverDir != recDir);
    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
