@@ -25,36 +25,36 @@
 #include <Trade\Trade.mqh>
 
 //--- Profit ---------------------------------------------------------
-input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD)
+input group "=== Quantum Profit Engine ==="
+input double   InpCloseProfitUSD      = 3.00;   // High-Velocity Scalp Target ($3.00 USD - Rapid Fires!)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
-input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
+input bool     InpScaleTPWithLegs     = true;   // Dynamic TP Scaling with Recovery Depth
+input double   InpTPScaleFactor       = 0.50;   // TP Boost Factor Per Leg
 
 //--- Trend Riding ---------------------------------------------------
-input group "=== Trend Riding ==="
-input bool     InpTrendRide           = true;   // Trend Riding Mode
-input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
-input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
+input group "=== Runner Acceleration ==="
+input bool     InpTrendRide           = true;   // Quantum Runner Mode
+input double   InpTrendMinPeak        = 2.50;   // Trailing Start Trigger ($2.50 USD)
+input double   InpTrendTrailRatio     = 0.20;   // Tight Trailing Profit Lock (20%)
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
-input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
-input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move)
-input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
+input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Fast Arming
+input double   InpGridStepUSD         = 2.50;   // High Frequency Grid Step ($2.50 Gold Move!)
+input bool     InpUseATR              = true;   // Dynamic ATR Volatility Scaling
 input int      InpAtrPeriod           = 14;     // ATR Period
-input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
+input double   InpAtrMult             = 1.0;    // ATR Velocity Multiplier
 
 //--- Reversal / recovery --------------------------------------------
-input group "=== Reversal & Recovery ==="
-input double   InpFirstTriggerUSD     = 4.00;   // 1st Recovery Trigger ($4.00)
-input double   InpReverseTriggerUSD   = 6.00;   // 2nd+ Recovery Trigger ($6.00)
-input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
-input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
-input double   InpRecoverMoveUSD      = 3.50;   // Fast Recovery Move Target ($3.50 chart move)
-input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Prevents rapid leg stacking!)
-input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35 - Dominant Recovery Sizing)
+input group "=== Quantum Asymmetric Recovery ==="
+input double   InpFirstTriggerUSD     = 3.00;   // 1st Rapid Recovery Trigger ($3.00)
+input double   InpReverseTriggerUSD   = 4.50;   // 2nd+ Rapid Recovery Trigger ($4.50)
+input int      InpReverseAfterSec     = 240;    // Time Trigger Backup (240 Sec)
+input double   InpReverseDistUSD      = 3.00;   // Recovery Stop Distance ($3.00)
+input double   InpRecoverMoveUSD      = 2.50;   // Fast Recovery Distance Target ($2.50)
+input bool     InpBeyondAllEntries    = true;   // Wide Boundary Order Placement
+input double   InpMaxLot              = 0.35;   // Maximum Dominant Lot Cap (0.35)
 input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
