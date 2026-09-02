@@ -25,7 +25,7 @@
 #include <Trade\Trade.mqh>
 
 //--- Profit ---------------------------------------------------------
-input group "=== Quantum Profit Engine ==="
+input group "=== Quantum Master Profit Engine ==="
 input double   InpCloseProfitUSD      = 5.00;   // Master Profit Target ($5.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Dynamic TP Scaling with Recovery Depth
@@ -37,7 +37,7 @@ input bool     InpTrendRide           = true;   // Quantum Runner Mode
 input double   InpTrendMinPeak        = 3.00;   // Trailing Start Trigger ($3.00 USD)
 input double   InpTrendTrailRatio     = 0.25;   // Trailing Profit Lock (25%)
 
-//--- Entry Grid -----------------------------------------------------
+//--- Entry Grid Settings --------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Master Initial Lot (0.01)
 input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Arming
