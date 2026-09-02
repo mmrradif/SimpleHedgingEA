@@ -26,7 +26,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 4.00;   // Take Profit Target ($4.00 USD)
+input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
@@ -41,10 +41,10 @@ input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
 input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
-input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move)
+input double   InpGridStepUSD         = 3.50;   // Grid Step Distance ($3.50 chart move - high frequency!)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
-input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
+input double   InpAtrMult             = 1.5;    // ATR Multiplier (News Volatility Shield)
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Reversal & Recovery ==="
@@ -53,7 +53,7 @@ input double   InpReverseTriggerUSD   = 6.00;   // 2nd+ Recovery Trigger ($6.00)
 input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
 input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
 input double   InpRecoverMoveUSD      = 3.50;   // Fast Recovery Move Target ($3.50 chart move)
-input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
+input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Prevents rapid leg stacking!)
 input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
 input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
@@ -63,10 +63,10 @@ input bool     InpBreakoutRecovery    = false;  // Breakout Recovery Mode
 
 //--- Trend Filter ---------------------------------------------------
 input group "=== Trend Filter ==="
-input bool     InpUseTrendFilter      = false;  // Pure Dual-Side Hedging (No directional bias)
-input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M15; // Trend Filter Timeframe
-input int      InpTrendFastEMA        = 20;     // Fast EMA Period
-input int      InpTrendSlowEMA        = 50;     // Slow EMA Period
+input bool     InpUseTrendFilter      = false;  // Pure Dual-Side Breakout Hedging
+input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M5;  // Trend Filter Timeframe
+input int      InpTrendFastEMA        = 9;      // Fast EMA Period
+input int      InpTrendSlowEMA        = 21;     // Slow EMA Period
 
 //--- Anti-churn / protection ----------------------------------------
 input group "=== Exit & Protection ==="
@@ -81,10 +81,10 @@ input double   InpHedgeExitRatio      = 0.20;   // Fast Hedged Exit Ratio
 input double   InpSpreadPad           = 2.5;    // Spread Multiplier Padding
 input double   InpWideSpreadPrice     = 1.00;   // Max Allowed Spread ($1.00 USD - News Shield)
 input double   InpGapUSD              = 15.0;   // Gap Protection Threshold ($ USD)
-input double   InpMaxCycleLossUSD     = 800.0;  // Circuit Breaker ($800 USD - Gives 4-Leg Recovery Room to Hit TP!)
+input double   InpMaxCycleLossUSD     = 0.0;    // Single Basket Circuit Breaker (0 = Pure Zone Recovery)
 input double   InpMaxAllowedDrawdownUSD = 0.0;  // Max Account Drawdown ($ USD, 0 = Pure Mathematical Recovery)
-input double   InpMaxDrawdownPercent  = 50.0;   // Max Account Drawdown (%)
-input bool     InpCloseFridayNight    = true;   // Friday Night Close (21:00 GMT - No Weekend Risk)
+input double   InpMaxDrawdownPercent  = 0.0;    // Max Account Drawdown (% - 0 = Pure Mathematical Recovery)
+input bool     InpCloseFridayNight    = false;  // Friday Night Close (False = Let mathematical recovery complete over weekend)
 input ulong    InpMagicNumber         = 888111; // Magic Number
 input ulong    InpSlippage            = 50;     // Slippage Tolerance
 input bool     InpShowVisual          = true;   // Show Chart Dashboard
@@ -321,6 +321,17 @@ void OnTick()
 
       ResetCycleState();
 
+      // Trend Filter Refresh: if trend shifted while pending was waiting, update to new trend
+      if(InpUseTrendFilter && (buyPend + sellPend) > 0)
+      {
+         int tDir = TrendDir();
+         if((tDir > 0 && sellPend > 0) || (tDir < 0 && buyPend > 0))
+         {
+            DeletePendings();
+            buyPend = 0; sellPend = 0;
+         }
+      }
+
       int wanted = MathMax(InpMaxGridLevels, 1) * 2;
       if(buyPend + sellPend == 0)
       {
@@ -338,11 +349,14 @@ void OnTick()
          }
          PrintFormat("[ARM] %d BuyStop + %d SellStop standing @ %.2f (step %.*f)",
                      InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
-         int placed = PlaceGrid(ORDER_TYPE_BUY_STOP) + PlaceGrid(ORDER_TYPE_SELL_STOP);
-         if(placed < wanted)
+         int tDir = TrendDir();
+         int placed = 0;
+         if(tDir >= 0) placed += PlaceGrid(ORDER_TYPE_BUY_STOP);
+         if(tDir <= 0) placed += PlaceGrid(ORDER_TYPE_SELL_STOP);
+         if(placed == 0)
          {
             m_armRetryUntil = TimeCurrent() + 5;
-            PrintFormat("[ARM PARTIAL] only %d/%d placed — retrying in 5s", placed, wanted);
+            PrintFormat("[ARM PARTIAL] only %d placed — retrying in 5s", placed);
          }
       }
       else if(WideSpread() || m_gapMode)
@@ -1078,11 +1092,11 @@ double CloseTarget()
    // Lightning-Fast Hedged Escape & Time-Decay Exit:
    if(buys > 0 && sells > 0)
    {
-      t = 2.50; // Hedged basket: quick $2.50 escape target!
-      if(age >= 10)
-         t = 1.00; // 10m+ in hedge: fast $1.00 escape
-      else if(legs >= 3)
-         t = 2.00; // 3+ legs open: $2.00 instant escape
+      t = 1.50; // Hedged basket: quick $1.50 escape target!
+      if(legs >= 4)
+         t = 0.50; // 4+ legs open: $0.50 instant escape!
+      else if(legs >= 2)
+         t = 1.00; // 2-3 legs open: $1.00 fast escape!
    }
    else if(InpScaleTPWithLegs && m_phase == "RECOVERY")
    {
@@ -1656,7 +1670,7 @@ bool EquityTrip()
 
    // 1. Overall Account Drawdown check
    bool accountTrip = (InpMaxAllowedDrawdownUSD > 0 && loss >= InpMaxAllowedDrawdownUSD) ||
-                      (pct >= InpMaxDrawdownPercent);
+                      (InpMaxDrawdownPercent > 0 && pct >= InpMaxDrawdownPercent);
 
    // 2. Cycle Circuit Breaker: check current basket net loss
    int b = 0, s = 0, bp = 0, sp = 0;
