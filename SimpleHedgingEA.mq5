@@ -26,7 +26,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($ USD)
+input double   InpCloseProfitUSD      = 3.00;   // Take Profit Target ($ USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
@@ -34,28 +34,28 @@ input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
 //--- Trend Riding ---------------------------------------------------
 input group "=== Trend Riding ==="
 input bool     InpTrendRide           = true;   // Trend Riding Mode
-input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
+input double   InpTrendMinPeak        = 2.00;   // Trailing Start Peak ($ USD)
 input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
 input int      InpMaxGridLevels       = 1;      // Entry Stop Levels (1)
-input double   InpGridStepUSD         = 3.00;   // Grid Step Distance ($ USD)
+input double   InpGridStepUSD         = 2.00;   // Grid Step Distance ($ USD)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.0;    // ATR Multiplier
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Reversal & Recovery ==="
-input double   InpFirstTriggerUSD     = 3.00;   // 1st Recovery Trigger ($ USD)
-input double   InpReverseTriggerUSD   = 5.00;   // 2nd+ Recovery Trigger ($ USD)
+input double   InpFirstTriggerUSD     = 2.00;   // 1st Recovery Trigger ($ USD)
+input double   InpReverseTriggerUSD   = 3.00;   // 2nd+ Recovery Trigger ($ USD)
 input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
-input double   InpReverseDistUSD      = 3.00;   // Recovery Stop Distance ($ USD)
-input double   InpRecoverMoveUSD      = 4.00;   // Recovery Move Target ($ USD)
+input double   InpReverseDistUSD      = 2.00;   // Recovery Stop Distance ($ USD)
+input double   InpRecoverMoveUSD      = 2.50;   // Recovery Move Target ($ USD)
 input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
-input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
-input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
+input double   InpMaxLot              = 0.05;   // Hard Max Lot Cap (0.05 — Ultra Safe!)
+input double   InpMaxBasketLots       = 0.25;   // Basket Max Lots (0.25 Max Total)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
 input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
@@ -1072,11 +1072,10 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
 //+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
 //| Strict Step-by-Step Leg Scaling (NEVER jumps to 0.30 on 1st rec) |
-//| Leg 1 (Initial): 0.01                                            |
-//| Leg 2 (1st Rec): 0.03                                            |
-//| Leg 3 (2nd Rec): 0.06                                            |
-//| Leg 4 (3rd Rec): 0.10                                            |
-//| Leg 5 (4th Rec): 0.15                                            |
+//+------------------------------------------------------------------+
+//| Micro-Distributed Lot Progression (Ultra-Low Drawdown)           |
+//| Positions scale gently: 0.01, 0.01, 0.02, 0.02, 0.03, 0.04, 0.05 |
+//| Hard Cap: Single trade NEVER exceeds 0.05 lot!                   |
 //+------------------------------------------------------------------+
 double RecoveryLot(int recDir, double net, double distToHit,
                    double buyLot, double sellLot, double totalLots)
@@ -1084,15 +1083,17 @@ double RecoveryLot(int recDir, double net, double distToHit,
    int legs = CountPos();
    double lot = InpStartLot;
 
-   // Strict leg progression based on actual open positions:
-   if(legs <= 1)      lot = NormalizeDouble(InpStartLot * 3.0, 2);  // Exactly 0.03 on 1st recovery!
-   else if(legs == 2) lot = NormalizeDouble(InpStartLot * 6.0, 2);  // Exactly 0.06 on 2nd recovery!
-   else if(legs == 3) lot = NormalizeDouble(InpStartLot * 10.0, 2); // Exactly 0.10 on 3rd recovery!
-   else if(legs == 4) lot = NormalizeDouble(InpStartLot * 15.0, 2); // Exactly 0.15 on 4th recovery!
-   else               lot = NormalizeDouble(InpStartLot * 20.0, 2); // Exactly 0.20 on 5th+ recovery!
+   // Gentle micro-scaling:
+   if(legs <= 1)      lot = InpStartLot;        // 0.01 lot (Leg 1-2)
+   else if(legs == 2) lot = InpStartLot * 2.0;  // 0.02 lot (Leg 3)
+   else if(legs == 3) lot = InpStartLot * 2.0;  // 0.02 lot (Leg 4)
+   else if(legs == 4) lot = InpStartLot * 3.0;  // 0.03 lot (Leg 5)
+   else if(legs == 5) lot = InpStartLot * 3.0;  // 0.03 lot (Leg 6)
+   else if(legs == 6) lot = InpStartLot * 4.0;  // 0.04 lot (Leg 7)
+   else               lot = InpStartLot * 5.0;  // 0.05 lot (Leg 8+)
 
-   // Hard ceiling
-   double cap = (InpMaxLot > 0) ? InpMaxLot : 0.20;
+   // Hard ceiling: strictly capped at InpMaxLot (default 0.05)
+   double cap = (InpMaxLot > 0) ? InpMaxLot : 0.05;
    if(lot > cap) lot = cap;
 
    if(lot < InpStartLot) lot = InpStartLot;
