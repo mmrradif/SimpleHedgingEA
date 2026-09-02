@@ -10,13 +10,12 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 20 BuyStop + 20 SellStop, 0.01 start lot.      |
-//|   2. First fill wins -> opposite pendings cleared, same-dir      |
-//|      pendings KEPT on chart -> PHASE 1: TREND RIDING.            |
+//|   1. Flat  -> arm 5 BuyStop + 5 SellStop, 0.01 lot ($5000 safe). |
+//|   2. First fill wins -> dual grid active -> TREND RIDING.        |
 //|   3. TRENDING: sequential fills ride trend, peak tracked,        |
-//|      trailing net locks massive profits, all open until TP!      |
-//|   4. REVERSAL: standing reverse stop triggers with dynamic lot,  |
-//|      instantly arms next reverse stop on opposite side.          |
+//|      trailing net locks profits, all open until TP!              |
+//|   4. REVERSAL: opposite grid catches reversals with dominant lot |
+//|      to turn basket into net profit.                             |
 //|   5. PING-PONG & TIME DECAY: fast escape targets ($2.50 -> $0).  |
 //|   6. Close -> Next Candle Filter -> re-arm.                      |
 //+------------------------------------------------------------------+
@@ -42,8 +41,8 @@ input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fract
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 20;     // BuyStops and SellStops (20 BuyStop + 20 SellStop multi-level grid)
-input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low risk
+input int      InpMaxGridLevels       = 5;      // BuyStops and SellStops (5 BuyStop + 5 SellStop low-risk grid for $5000 balance)
+input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low margin
 input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
 input int      InpAtrPeriod           = 14;     // ATR period (M1)
@@ -1298,14 +1297,14 @@ double SpreadPadDist()
 //+------------------------------------------------------------------+
 double GridLotForLevel(int level)
 {
+   // Safe low-margin progression for $5000 account:
+   // Level 1-4: 0.01 lot
+   // Level 5-6: 0.02 lot
+   // Level 7+:  0.03 lot
    double lot = InpStartLot;
-   if(level >= 18)      lot = InpStartLot * 18.0; // 0.18 lot
-   else if(level >= 15) lot = InpStartLot * 12.0; // 0.12 lot
-   else if(level >= 12) lot = InpStartLot * 8.0;  // 0.08 lot
-   else if(level >= 9)  lot = InpStartLot * 5.0;  // 0.05 lot
-   else if(level >= 6)  lot = InpStartLot * 3.0;  // 0.03 lot
-   else if(level >= 3)  lot = InpStartLot * 2.0;  // 0.02 lot
-   else                 lot = InpStartLot * 1.0;  // 0.01 lot
+   if(level >= 6)      lot = InpStartLot * 3.0; // 0.03 lot
+   else if(level >= 4) lot = InpStartLot * 2.0; // 0.02 lot
+   else                lot = InpStartLot * 1.0; // 0.01 lot (levels 0 to 3 are 0.01!)
 
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
    return NormalizeLot(lot);
