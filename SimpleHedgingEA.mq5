@@ -1350,6 +1350,12 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 //+------------------------------------------------------------------+
 void StretchPendingsFarther()
 {
+   static datetime lastStretch = 0;
+   if(TimeCurrent() - lastStretch < 15) return;
+   lastStretch = TimeCurrent();
+
+   if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED) return;
+
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    if(ask <= 0 || bid <= 0) return;
