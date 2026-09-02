@@ -26,7 +26,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($ USD)
+input double   InpCloseProfitUSD      = 10.00;  // Basket TP Target ($10.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
@@ -34,14 +34,14 @@ input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
 //--- Trend Riding ---------------------------------------------------
 input group "=== Trend Riding ==="
 input bool     InpTrendRide           = true;   // Trend Riding Mode
-input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
+input double   InpTrendMinPeak        = 5.00;   // Trailing Start Peak ($ USD)
 input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
-input int      InpMaxGridLevels       = 1;      // Entry Stop Levels (1 BuyStop + 1 SellStop)
-input double   InpGridStepUSD         = 3.00;   // Grid Step Distance ($3.00 chart move)
+input int      InpMaxGridLevels       = 5;      // 5 BuyStops + 5 SellStops Pre-Placed Standing in Advance
+input double   InpGridStepUSD         = 2.00;   // Grid Step Distance ($2.00 chart move)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.0;    // ATR Multiplier
@@ -54,8 +54,8 @@ input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
 input double   InpReverseDistUSD      = 3.00;   // Recovery Stop Distance ($3.00)
 input double   InpRecoverMoveUSD      = 4.00;   // Recovery Move Target ($4.00)
 input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
-input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
-input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
+input double   InpMaxLot              = 0.20;   // Hard Max Lot per Trade (0.20 Max)
+input double   InpMaxBasketLots       = 1.00;   // Hard Max Total Basket Lots (1.00 Max Combined)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
 input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
@@ -181,8 +181,54 @@ double OnTester()
    PrintFormat("[STAT] equityDD=%.2f (%.2f%%)  balanceDD=%.2f (%.2f%%)",
                eqdd, eqddp, baldd, balddp);
    PrintFormat("[STAT] maxConsecLossTrades=%.0f  minMarginLevel=%.1f%%", maxCL, minML);
+
+   ExportTradesToCSV();
    Print("====================================");
    return net;
+}
+
+//+------------------------------------------------------------------+
+//| Export complete trade history to Excel CSV file                  |
+//+------------------------------------------------------------------+
+void ExportTradesToCSV()
+{
+   int file = FileOpen("January_2026_RealTicks_Trades.csv", FILE_WRITE|FILE_CSV|FILE_COMMON, ",");
+   if(file == INVALID_HANDLE)
+      file = FileOpen("January_2026_RealTicks_Trades.csv", FILE_WRITE|FILE_CSV, ",");
+   
+   if(file != INVALID_HANDLE)
+   {
+      FileWrite(file, "DealTicket", "OrderTicket", "Time", "Type", "Entry", "Volume", "Price", "ProfitUSD", "BalanceUSD");
+      HistorySelect(0, TimeCurrent());
+      int totalDeals = HistoryDealsTotal();
+      double balance = 5000.0;
+      for(int i = 0; i < totalDeals; i++)
+      {
+         ulong dealTicket = HistoryDealGetTicket(i);
+         if(dealTicket == 0) continue;
+         
+         datetime dTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+         long dType     = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+         long dEntry    = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+         double dVol    = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+         double dPrice  = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+         double dProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+         double dComm   = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+         double dSwap   = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+         ulong dOrder   = (ulong)HistoryDealGetInteger(dealTicket, DEAL_ORDER);
+         
+         balance += (dProfit + dComm + dSwap);
+         
+         string strType = (dType == DEAL_TYPE_BUY) ? "BUY" : ((dType == DEAL_TYPE_SELL) ? "SELL" : "BALANCE");
+         string strEntry = (dEntry == DEAL_ENTRY_IN) ? "IN (Open)" : ((dEntry == DEAL_ENTRY_OUT) ? "OUT (Close)" : "IN/OUT");
+         
+         FileWrite(file, (string)dealTicket, (string)dOrder, TimeToString(dTime, TIME_DATE|TIME_SECONDS),
+                   strType, strEntry, DoubleToString(dVol, 2), DoubleToString(dPrice, _Digits),
+                   DoubleToString(dProfit, 2), DoubleToString(balance, 2));
+      }
+      FileClose(file);
+      Print("[CSV EXPORT] Successfully exported all trades to January_2026_RealTicks_Trades.csv");
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -275,6 +321,7 @@ void OnTick()
 
       ResetCycleState();
 
+      int wanted = MathMax(InpMaxGridLevels, 1) * 2;
       if(buyPend + sellPend == 0)
       {
          if(TimeCurrent() < m_armRetryUntil)
@@ -289,19 +336,19 @@ void OnTick()
             DrawVisual();
             return;
          }
-         PrintFormat("[ARM] 1 BuyStop + 1 SellStop @ %.2f (step %.*f)",
-                     InpStartLot, _Digits, GridStep());
+         PrintFormat("[ARM] %d BuyStop + %d SellStop standing @ %.2f (step %.*f)",
+                     InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
          int placed = PlaceGrid(ORDER_TYPE_BUY_STOP) + PlaceGrid(ORDER_TYPE_SELL_STOP);
-         if(placed < 2)
+         if(placed < wanted)
          {
             m_armRetryUntil = TimeCurrent() + 5;
-            PrintFormat("[ARM PARTIAL] only %d/2 placed — retrying in 5s", placed);
+            PrintFormat("[ARM PARTIAL] only %d/%d placed — retrying in 5s", placed, wanted);
          }
       }
       else if(WideSpread() || m_gapMode)
          StretchPendingsFarther();
 
-      m_state = "ARMED — 1 BuyStop + 1 SellStop standing";
+      m_state = StringFormat("ARMED — %d BuyStop + %d SellStop standing", InpMaxGridLevels, InpMaxGridLevels);
       DrawVisual();
       return;
    }
@@ -1077,12 +1124,15 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
 //+------------------------------------------------------------------+
 //| Strict Step-by-Step Leg Scaling (NEVER jumps to 0.30 on 1st rec) |
 //+------------------------------------------------------------------+
-//| Exact Mathematical Recovery Lot Formula (+$5,185.06 Verified)     |
-//| Sizing calculates exact volume needed to turn green at move target|
+//| Dynamic Recovery Lot with Strict 0.20 Max and 1.00 Basket Cap    |
 //+------------------------------------------------------------------+
 double RecoveryLot(int recDir, double net, double distToHit,
                    double buyLot, double sellLot, double totalLots)
 {
+   // Check Basket Lot Cap
+   if(InpMaxBasketLots > 0 && totalLots >= InpMaxBasketLots)
+      return 0;
+
    double vpp       = ValuePerPrice();
    double signedVol = buyLot - sellLot;
    if(distToHit < 0) distToHit = 0;
@@ -1090,8 +1140,8 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Floating loss when the reverse stop hits
    double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
 
-   // Target for hedged recovery
-   double target = (buyLot > 0 && sellLot > 0) ? 2.50 : InpCloseProfitUSD;
+   // Target for hedged recovery ($10.00 Basket Target)
+   double target = (buyLot > 0 && sellLot > 0) ? 5.00 : InpCloseProfitUSD;
    if(target < 0.02) target = 0.02;
    target += SpreadCostUSD(totalLots + InpStartLot);
 
@@ -1106,15 +1156,19 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Exact Mathematical Lot Equation:
    double lot = (target - lossAtFill) / denom + (oppVol - myVol);
 
-   // Minimum required lot to guarantee net dominance
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 2.0 + InpStartLot - myVol) : (InpStartLot * 2.0);
+   // Minimum required lot
+   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.5 + InpStartLot - myVol) : (InpStartLot * 2.0);
    if(minRequiredLot < InpStartLot * 2.0) minRequiredLot = InpStartLot * 2.0;
 
    if(lot < minRequiredLot) lot = minRequiredLot;
 
-   // STRICT HARD CEILING: Never exceed InpMaxLot under any circumstance!
-   if(InpMaxLot > 0 && lot > InpMaxLot) 
-      lot = InpMaxLot;
+   // STRICT HARD CAP: Max 0.20 lot per trade!
+   double maxCap = (InpMaxLot > 0) ? InpMaxLot : 0.20;
+   if(lot > maxCap) lot = maxCap;
+
+   // Ensure total basket does not exceed InpMaxBasketLots (1.00)
+   if(InpMaxBasketLots > 0 && (totalLots + lot) > InpMaxBasketLots)
+      lot = InpMaxBasketLots - totalLots;
 
    if(lot < InpStartLot) lot = InpStartLot;
    return NormalizeLot(lot);
@@ -1305,18 +1359,25 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = 1; // Strictly 1 BuyStop + 1 SellStop initial entry
-   double lot     = NormalizeLot(InpStartLot);
+   int    n       = MathMax(InpMaxGridLevels, 1);
    int    placed  = 0;
 
-   // Minimum safety gap: at least 2.5x spread and at least 50 points/ticks
    double point   = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double spread  = (ask > bid) ? (ask - bid) : 0;
-   double minSafetyGap = MathMax(spread * 2.5, point * 50);
+   double minSafetyGap = MathMax(spread * 2.0, point * 30);
    if(step < minSafetyGap) step = minSafetyGap;
 
+   // 5-level fixed progression: Stop 1-2 = 0.01, Stop 3-4 = 0.02, Stop 5 = 0.03
    for(int i = 0; i < n; i++)
    {
+      double lot = InpStartLot;
+      if(i >= 4)      lot = InpStartLot * 3.0; // 0.03 lot
+      else if(i >= 2) lot = InpStartLot * 2.0; // 0.02 lot
+      else            lot = InpStartLot * 1.0; // 0.01 lot
+
+      if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
+      lot = NormalizeLot(lot);
+
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
@@ -1332,7 +1393,8 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
          price = NormalizeDouble(price, _Digits);
          if(price >= bid) continue;
       }
-      if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop")))
+      if(SendPendingSafe(type, lot, price, StringFormat("%s #%d",
+                         (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
          placed++;
    }
    return placed;
