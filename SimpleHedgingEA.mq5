@@ -336,8 +336,10 @@ void OnTick()
    {
       m_trendDir = (buys >= sells) ? 1 : -1;
       m_phase    = "TRENDING";
+      // Cancel the initial opposite pending immediately so it gets replaced by the dynamic dominant recovery stop!
+      DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP);
       ClearAllTP();
-      PrintFormat("[PHASE->%s] dir=%s, dual 20-grid active",
+      PrintFormat("[PHASE->%s] dir=%s, initial opposite 0.01 stop cancelled",
                   m_phase, m_trendDir > 0 ? "BUY" : "SELL");
    }
 
@@ -1114,9 +1116,9 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Exact Mathematical Lot Equation:
    double lot = (target - lossAtFill) / denom + (oppVol - myVol);
 
-   // Minimum required lot to ensure net dominance
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.3 - myVol + InpStartLot) : (InpStartLot * 2.0);
-   if(minRequiredLot < InpStartLot) minRequiredLot = InpStartLot;
+   // Minimum required lot to guarantee net dominance (at least 2.0x opposing volume + InpStartLot)
+   double minRequiredLot = (oppVol > 0) ? (oppVol * 2.0 + InpStartLot - myVol) : (InpStartLot * 2.0);
+   if(minRequiredLot < InpStartLot * 2.0) minRequiredLot = InpStartLot * 2.0;
 
    if(lot < minRequiredLot) lot = minRequiredLot;
 
