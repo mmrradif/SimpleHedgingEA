@@ -40,8 +40,8 @@ input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
-input int      InpMaxGridLevels       = 1;      // Entry Stop Levels (1)
-input double   InpGridStepUSD         = 2.00;   // Grid Step Distance ($ USD)
+input int      InpMaxGridLevels       = 10;     // Pre-Placed Grid Levels on Each Side (10 BuyStops + 10 SellStops standing in advance)
+input double   InpGridStepUSD         = 1.20;   // Grid Step Distance ($1.20 dense gap for fast fills)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.0;    // ATR Multiplier
@@ -275,7 +275,8 @@ void OnTick()
 
       ResetCycleState();
 
-      if(buyPend == 0 || sellPend == 0)
+      int wanted = MathMax(InpMaxGridLevels, 1) * 2;
+      if(buyPend + sellPend == 0)
       {
          if(TimeCurrent() < m_armRetryUntil)
          {
@@ -289,20 +290,19 @@ void OnTick()
             DrawVisual();
             return;
          }
-         DeletePendings();
-         PrintFormat("[ARM] 1 BuyStop + 1 SellStop @ %.2f (step %.*f)",
-                     InpStartLot, _Digits, GridStep());
+         PrintFormat("[ARM] %d BuyStop + %d SellStop @ %.2f (step %.*f)",
+                     InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
          int placed = PlaceGrid(ORDER_TYPE_BUY_STOP) + PlaceGrid(ORDER_TYPE_SELL_STOP);
-         if(placed < 2)
+         if(placed < wanted)
          {
             m_armRetryUntil = TimeCurrent() + 5;
-            PrintFormat("[ARM PARTIAL] only %d/2 placed — retrying in 5s", placed);
+            PrintFormat("[ARM PARTIAL] only %d/%d placed — retrying in 5s", placed, wanted);
          }
       }
       else if(WideSpread() || m_gapMode)
          StretchPendingsFarther();
 
-      m_state = "ARMED — BuyStop + SellStop standing";
+      m_state = StringFormat("ARMED — %d BuyStop + %d SellStop standing", InpMaxGridLevels, InpMaxGridLevels);
       DrawVisual();
       return;
    }
@@ -1282,33 +1282,28 @@ double SpreadPadDist()
 
 //+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
+
+
 //+------------------------------------------------------------------+
 double GridLotForLevel(int level)
 {
-   // 20-level smooth pre-placed progression safe for $5000 balance:
-   // Levels 0-2   (1st to 3rd stop):   0.01 lot
-   // Levels 3-5   (4th to 6th stop):   0.02 lot
-   // Levels 6-8   (7th to 9th stop):   0.03 lot
-   // Levels 9-11  (10th to 12th stop): 0.04 lot
-   // Levels 12-14 (13th to 15th stop): 0.06 lot
-   // Levels 15-16 (16th to 17th stop): 0.08 lot
-   // Levels 17-18 (18th to 19th stop): 0.10 lot
-   // Level 19     (20th stop):         0.12 lot
+   // 10-level micro progression (Ultra-safe for $3000-$5000 accounts):
+   // Level 0-1 (1st-2nd stop): 0.01 lot
+   // Level 2-3 (3rd-4th stop): 0.02 lot
+   // Level 4-5 (5th-6th stop): 0.03 lot
+   // Level 6-7 (7th-8th stop): 0.04 lot
+   // Level 8-9 (9th-10th stop): 0.05 lot
    double lot = InpStartLot;
-   if(level >= 19)      lot = InpStartLot * 12.0; // 0.12 lot
-   else if(level >= 17) lot = InpStartLot * 10.0; // 0.10 lot
-   else if(level >= 15) lot = InpStartLot * 8.0;  // 0.08 lot
-   else if(level >= 12) lot = InpStartLot * 6.0;  // 0.06 lot
-   else if(level >= 9)  lot = InpStartLot * 4.0;  // 0.04 lot
-   else if(level >= 6)  lot = InpStartLot * 3.0;  // 0.03 lot
-   else if(level >= 3)  lot = InpStartLot * 2.0;  // 0.02 lot
-   else                 lot = InpStartLot * 1.0;  // 0.01 lot (first 3 stops!)
+   if(level >= 8)      lot = InpStartLot * 5.0; // 0.05 lot
+   else if(level >= 6) lot = InpStartLot * 4.0; // 0.04 lot
+   else if(level >= 4) lot = InpStartLot * 3.0; // 0.03 lot
+   else if(level >= 2) lot = InpStartLot * 2.0; // 0.02 lot
+   else                 lot = InpStartLot * 1.0; // 0.01 lot
 
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
    return NormalizeLot(lot);
 }
 
-//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
 int PlaceGrid(ENUM_ORDER_TYPE type)
 {
@@ -1318,18 +1313,18 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    double minDist = MinDist();
    double step    = GridStep();
-   int    n       = 1; // Strictly 1 BuyStop + 1 SellStop initial entry
-   double lot     = NormalizeLot(InpStartLot);
+   int    n       = MathMax(InpMaxGridLevels, 1);
    int    placed  = 0;
 
-   // Minimum safety gap: at least 2.5x spread and at least 50 points/ticks
+   // Minimum safety gap: at least 2.0x spread and at least 30 points/ticks
    double point   = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double spread  = (ask > bid) ? (ask - bid) : 0;
-   double minSafetyGap = MathMax(spread * 2.5, point * 50);
+   double minSafetyGap = MathMax(spread * 2.0, point * 30);
    if(step < minSafetyGap) step = minSafetyGap;
 
    for(int i = 0; i < n; i++)
    {
+      double lot = GridLotForLevel(i);
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
@@ -1345,7 +1340,8 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
          price = NormalizeDouble(price, _Digits);
          if(price >= bid) continue;
       }
-      if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop")))
+      if(SendPendingSafe(type, lot, price, StringFormat("%s #%d",
+                         (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
          placed++;
    }
    return placed;
