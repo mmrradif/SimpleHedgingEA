@@ -418,11 +418,6 @@ void OnTick()
       return;
    }
 
-   int activeDir = ActiveDir();
-
-   //=== GUARD 2: while live, AT MOST ONE pending exists on the chart ==
-   SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
-
    //=== Shared basket TP only in RECOVERY phase =======================
    if(InpUseBasketTP && m_phase == "RECOVERY")
       ApplyBasketTP(buyLot, sellLot);
@@ -443,10 +438,8 @@ bool HandleTrendingPhase(int buys, int sells, double buyLot, double sellLot,
    //--- New fill detected this tick?
    if(pos > m_prevPosCount)
    {
-      // Safety: purge any opposite-side positions/pendings that slipped in
-      DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP);
-      PrintFormat("[TREND LEG %d] fill #%d  net=$%.2f  totalLot=%.2f",
-                  sameDirPos, sameDirPos, net, buyLot + sellLot);
+      PrintFormat("[GRID FILL] fill #%d  net=$%.2f  totalLot=%.2f",
+                  sameDirPos, net, buyLot + sellLot);
    }
 
    //--- Peak update
@@ -524,16 +517,14 @@ bool HandleTrendingPhase(int buys, int sells, double buyLot, double sellLot,
 
    if(net <= -trigger && priceReversed)
    {
-      PrintFormat("[PHASE->RECOVERY] net=$%.2f  trigger=$%.2f (spread $%.2f) — switching to Recovery",
-                  net, -trigger, spreadCost);
-      // Cancel remaining same-dir pendings only when truly reversing
-      DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP);
+      PrintFormat("[PHASE->RECOVERY] net=$%.2f  trigger=$%.2f — market reversed, opposite grid active",
+                  net, -trigger);
       m_phase = "RECOVERY";
       if(m_redSince == 0) m_redSince = TimeCurrent();
-      return false; // fall through to RECOVERY
+      return false;
    }
 
-   return true; // still trending — SAME DIRECTION PENDINGS STAY ACTIVE!
+   return true;
 }
 
 //+------------------------------------------------------------------+
