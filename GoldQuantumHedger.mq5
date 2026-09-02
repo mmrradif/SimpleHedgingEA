@@ -26,7 +26,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Quantum Master Profit Engine ==="
-input double   InpCloseProfitUSD      = 5.00;   // Master Profit Target ($5.00 USD)
+input double   InpCloseProfitUSD      = 5.00;   // Master Profit Target ($5.00 USD - Optimal Gold Sweet Spot)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Dynamic TP Scaling with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // Dynamic TP Boost Per Leg ($0.50 USD)
