@@ -10,9 +10,9 @@
 //|     even if the EA misses ticks.                                 |
 //|                                                                  |
 //|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 6 BuyStop + 6 SellStop (0.01->0.25) in advance. |
-//|   2. Pre-calculated geometry: 0.01, 0.02, 0.04, 0.08, 0.15, 0.25 |
-//|   3. Zero mid-trade deletions: all orders stand in advance!       |
+//|   1. Flat  -> arm 20 BuyStop + 20 SellStop (0.01->0.12) advance.  |
+//|   2. Pre-calculated geometry across all 20 levels!               |
+//|   3. Zero mid-trade deletions: all 40 orders stand in advance!    |
 //|   4. Whichever way market moves, that side's volume dominates     |
 //|      and converts entire basket into net profit!                 |
 //|   5. GLOBAL BASKET EXIT: closes all in profit -> next candle.    |
@@ -39,7 +39,7 @@ input double   InpTrendTrailRatio     = 0.25;   // Close if net drops this fract
 
 //--- Entry grid -----------------------------------------------------
 input group "=== Entry Grid (only while flat) ==="
-input int      InpMaxGridLevels       = 6;      // Pre-placed Grid Levels on each side (6 BuyStops + 6 SellStops standing in advance)
+input int      InpMaxGridLevels       = 20;     // Pre-placed Grid Levels on each side (20 BuyStops + 20 SellStops standing in advance)
 input double   InpStartLot            = 0.01;   // Starting lot: 0.01 for maximum safety and low margin
 input double   InpGridStepUSD         = 3.00;   // Minimum gap between levels — $3.00 chart gap
 input bool     InpUseATR              = true;   // Widen the step with real M1 volatility
@@ -1306,21 +1306,24 @@ double SpreadPadDist()
 //+------------------------------------------------------------------+
 double GridLotForLevel(int level)
 {
-   // Pre-calculated geometric progression standing in advance:
-   // Level 0: 0.01 lot
-   // Level 1: 0.02 lot
-   // Level 2: 0.04 lot
-   // Level 3: 0.08 lot
-   // Level 4: 0.15 lot
-   // Level 5: 0.25 lot
+   // 20-level smooth pre-placed progression safe for $5000 balance:
+   // Levels 0-2   (1st to 3rd stop):   0.01 lot
+   // Levels 3-5   (4th to 6th stop):   0.02 lot
+   // Levels 6-8   (7th to 9th stop):   0.03 lot
+   // Levels 9-11  (10th to 12th stop): 0.04 lot
+   // Levels 12-14 (13th to 15th stop): 0.06 lot
+   // Levels 15-16 (16th to 17th stop): 0.08 lot
+   // Levels 17-18 (18th to 19th stop): 0.10 lot
+   // Level 19     (20th stop):         0.12 lot
    double lot = InpStartLot;
-   if(level == 0)      lot = 0.01;
-   else if(level == 1) lot = 0.02;
-   else if(level == 2) lot = 0.04;
-   else if(level == 3) lot = 0.08;
-   else if(level == 4) lot = 0.15;
-   else if(level == 5) lot = 0.25;
-   else                lot = 0.35;
+   if(level >= 19)      lot = InpStartLot * 12.0; // 0.12 lot
+   else if(level >= 17) lot = InpStartLot * 10.0; // 0.10 lot
+   else if(level >= 15) lot = InpStartLot * 8.0;  // 0.08 lot
+   else if(level >= 12) lot = InpStartLot * 6.0;  // 0.06 lot
+   else if(level >= 9)  lot = InpStartLot * 4.0;  // 0.04 lot
+   else if(level >= 6)  lot = InpStartLot * 3.0;  // 0.03 lot
+   else if(level >= 3)  lot = InpStartLot * 2.0;  // 0.02 lot
+   else                 lot = InpStartLot * 1.0;  // 0.01 lot (first 3 stops!)
 
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
    return NormalizeLot(lot);
