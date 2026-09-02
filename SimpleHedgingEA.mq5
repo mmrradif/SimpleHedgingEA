@@ -26,7 +26,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 10.00;  // Basket TP Target ($10.00 USD)
+input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
@@ -34,28 +34,28 @@ input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
 //--- Trend Riding ---------------------------------------------------
 input group "=== Trend Riding ==="
 input bool     InpTrendRide           = true;   // Trend Riding Mode
-input double   InpTrendMinPeak        = 5.00;   // Trailing Start Peak ($ USD)
+input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
 input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
-input int      InpMaxGridLevels       = 5;      // 5 BuyStops + 5 SellStops Pre-Placed Standing in Advance
-input double   InpGridStepUSD         = 2.00;   // Grid Step Distance ($2.00 chart move)
+input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
+input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move - avoids chop)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.0;    // ATR Multiplier
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Reversal & Recovery ==="
-input double   InpFirstTriggerUSD     = 3.00;   // 1st Recovery Trigger ($3.00)
-input double   InpReverseTriggerUSD   = 5.00;   // 2nd+ Recovery Trigger ($5.00)
+input double   InpFirstTriggerUSD     = 4.00;   // 1st Recovery Trigger ($4.00)
+input double   InpReverseTriggerUSD   = 6.00;   // 2nd+ Recovery Trigger ($6.00)
 input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
-input double   InpReverseDistUSD      = 3.00;   // Recovery Stop Distance ($3.00)
+input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
 input double   InpRecoverMoveUSD      = 4.00;   // Recovery Move Target ($4.00)
 input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
-input double   InpMaxLot              = 0.20;   // Hard Max Lot per Trade (0.20 Max)
-input double   InpMaxBasketLots       = 1.00;   // Hard Max Total Basket Lots (1.00 Max Combined)
+input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
+input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
 input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
@@ -1130,10 +1130,6 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
 double RecoveryLot(int recDir, double net, double distToHit,
                    double buyLot, double sellLot, double totalLots)
 {
-   // Check Basket Lot Cap
-   if(InpMaxBasketLots > 0 && totalLots >= InpMaxBasketLots)
-      return 0;
-
    double vpp       = ValuePerPrice();
    double signedVol = buyLot - sellLot;
    if(distToHit < 0) distToHit = 0;
@@ -1141,8 +1137,8 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Floating loss when the reverse stop hits
    double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
 
-   // Target for hedged recovery ($10.00 Basket Target)
-   double target = (buyLot > 0 && sellLot > 0) ? 5.00 : InpCloseProfitUSD;
+   // Target for hedged recovery ($2.50 quick exit)
+   double target = (buyLot > 0 && sellLot > 0) ? 2.50 : InpCloseProfitUSD;
    if(target < 0.02) target = 0.02;
    target += SpreadCostUSD(totalLots + InpStartLot);
 
@@ -1157,19 +1153,15 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // Exact Mathematical Lot Equation:
    double lot = (target - lossAtFill) / denom + (oppVol - myVol);
 
-   // Minimum required lot
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 1.5 + InpStartLot - myVol) : (InpStartLot * 2.0);
+   // Minimum required lot to guarantee net dominance
+   double minRequiredLot = (oppVol > 0) ? (oppVol * 2.0 + InpStartLot - myVol) : (InpStartLot * 2.0);
    if(minRequiredLot < InpStartLot * 2.0) minRequiredLot = InpStartLot * 2.0;
 
    if(lot < minRequiredLot) lot = minRequiredLot;
 
-   // STRICT HARD CAP: Max 0.20 lot per trade!
-   double maxCap = (InpMaxLot > 0) ? InpMaxLot : 0.20;
-   if(lot > maxCap) lot = maxCap;
-
-   // Ensure total basket does not exceed InpMaxBasketLots (1.00)
-   if(InpMaxBasketLots > 0 && (totalLots + lot) > InpMaxBasketLots)
-      lot = InpMaxBasketLots - totalLots;
+   // STRICT HARD CEILING: Never exceed InpMaxLot under any circumstance!
+   if(InpMaxLot > 0 && lot > InpMaxLot) 
+      lot = InpMaxLot;
 
    if(lot < InpStartLot) lot = InpStartLot;
    return NormalizeLot(lot);
