@@ -142,6 +142,8 @@ bool     m_trailActive;       // Has trailing been activated this phase?
 double   m_recoverTrailPeak;  // Best net seen during RECOVERY (for trailing net lock)
 datetime m_recoveryArmedAt;   // When the recovery/breakout stop was last armed
 
+bool SendPending(ENUM_ORDER_TYPE type, double lot, double price, string comment);
+
 //+------------------------------------------------------------------+
 int OnInit()
 {
@@ -1534,6 +1536,8 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
 
    // Auto-Compounding dynamic progression:
    double baseLot = DynamicStartLot();
+   double basePrice = (type == ORDER_TYPE_BUY_STOP) ? (ask + minDist) : (bid - minDist);
+
    for(int i = 0; i < n; i++)
    {
       double lot = NormalizeLot(baseLot);
@@ -1541,19 +1545,17 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
       {
-         price = ask + step * (i + 1);
-         if(price < ask + minDist) price = ask + minDist;
+         price = basePrice + step * i;
          price = NormalizeDouble(price, _Digits);
          if(price <= ask) continue;
       }
       else
       {
-         price = bid - step * (i + 1);
-         if(price > bid - minDist) price = bid - minDist;
+         price = basePrice - step * i;
          price = NormalizeDouble(price, _Digits);
          if(price >= bid) continue;
       }
-      if(SendPendingSafe(type, lot, price, StringFormat("%s #%d",
+      if(SendPending(type, lot, price, StringFormat("%s #%d",
                          (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
          placed++;
    }
