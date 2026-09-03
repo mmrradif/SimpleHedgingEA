@@ -39,15 +39,15 @@ input double   InpWideSpreadPrice     = 1.00;   // Wide Spread News Shield ($1.0
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 10.00;  // Super Take Profit Target ($10.00 USD per cycle)
+input double   InpCloseProfitUSD      = 100.00; // Overall Basket Take Profit Target ($100.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
-input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg (+$5.00 per leg)
+input bool     InpScaleTPWithLegs     = false;  // Fixed $100 Target (All trades close at $100 net profit)
+input double   InpTPScaleFactor       = 0.00;   // TP Scale Factor
 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Mega-Wave Trend Riding ==="
 input bool     InpTrendRide           = true;   // Mega-Wave Trend Riding Mode
-input double   InpTrendMinPeak        = 5.00;   // Trailing Start Peak ($5.00 USD)
+input double   InpTrendMinPeak        = 10.00;  // Trailing Start Peak ($10.00 USD)
 input double   InpTrendTrailRatio     = 0.20;   // Lock 80% of Peak Runaway Profit (20% Trail)
 
 //--- PMax (Profit Maximizer by KivancOzbilgic) ----------------------
@@ -60,12 +60,12 @@ input ENUM_TIMEFRAMES InpPMaxTF       = PERIOD_CURRENT; // PMax Timeframe
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
-input double   InpStartLot            = 0.01;   // Base Initial Lot Size (0.01)
-input int      InpMaxGridLevels       = 20;     // 20 BuyStop / 20 SellStop Standing Grid!
-input double   InpGridStepUSD         = 3.00;   // Dynamic Grid Step ($3.00 chart move)
+input double   InpStartLot            = 0.01;   // 0.01 Lot Base (All 20 Grid Orders @ 0.01)
+input int      InpMaxGridLevels       = 20;     // 20 Standing Stop Orders in Signal Direction!
+input double   InpGridStepUSD         = 3.00;   // Grid Step Spacing ($3.00 chart move per level)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
-input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
+input double   InpAtrMult             = 1.0;    // ATR Multiplier
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Dominant Recovery Engine ==="
@@ -1546,13 +1546,7 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
    double baseLot = DynamicStartLot();
    for(int i = 0; i < n; i++)
    {
-      double lot = baseLot;
-      if(i >= 4)      lot = baseLot * 3.0;
-      else if(i >= 2) lot = baseLot * 2.0;
-      else            lot = baseLot * 1.0;
-
-      if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
-      lot = NormalizeLot(lot);
+      double lot = NormalizeLot(baseLot);
 
       double price;
       if(type == ORDER_TYPE_BUY_STOP)
