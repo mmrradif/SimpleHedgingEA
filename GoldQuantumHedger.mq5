@@ -412,72 +412,16 @@ void OnTick()
       return;
    }
 
-   if(m_phase == "TRENDING" && (buys == 0 || sells == 0))
+   // New fill detected log
+   if(pos > m_prevPosCount)
    {
-      if(HandleTrendingPhase(buys, sells, buyLot, sellLot, net, pos))
-      {
-         m_prevPosCount = CountPos();
-         DrawVisual();
-         return;
-      }
+      PrintFormat("[GRID FILL] fill #%d  net=$%.2f  totalLot=%.2f",
+                  pos, net, buyLot + sellLot);
    }
 
-   //=== PHASE 2: RECOVERY =============================================
-   if(net < 0)
-   {
-      if(m_redSince == 0) m_redSince = TimeCurrent();
-   }
-   else
-      m_redSince = 0;
+   int activeDir = (buys >= sells) ? 1 : -1;
 
-   target = CloseTarget();
-
-   // Hedge Fast-Exit: if both sides open and net reaches fast target ($3.50), exit instantly
-   if(buys > 0 && sells > 0)
-   {
-      double hedgeTarget = target;
-      if(net >= hedgeTarget)
-      {
-         PrintFormat(">>> [HEDGE EXIT] net $%.2f >= hedge target $%.2f — RECOVERED & CLOSED", net, hedgeTarget);
-         DeletePendings();
-         m_closingInProgress = true;
-         m_placeAfterClose   = true;
-         ProcessClose();
-         m_prevPosCount = CountPos();
-         DrawVisual();
-         return;
-      }
-   }
-
-   // Trailing Net (Recovery phase, hedged basket only)
-   if(CheckTrailingNet(net, buys, sells))
-   {
-      DeletePendings();
-      m_closingInProgress = true;
-      m_placeAfterClose   = true;
-      ProcessClose();
-      m_prevPosCount = CountPos();
-      DrawVisual();
-      return;
-   }
-
-   // Normal target check
-   if(net >= target)
-   {
-      PrintFormat(">>> [CLOSE] net $%.2f >= target $%.2f  (buy %d/%.2f $%.2f | sell %d/%.2f $%.2f)",
-                  net, target, buys, buyLot, buyPft, sells, sellLot, sellPft);
-      DeletePendings();
-      m_closingInProgress = true;
-      m_placeAfterClose   = true;
-      ProcessClose();
-      m_prevPosCount = CountPos();
-      DrawVisual();
-      return;
-   }
-
-   int activeDir = ActiveDir();
-
-   // Dynamic Asymmetric Protection: maintain single calculated recovery stop
+   // Dynamic Asymmetric Protection: ALWAYS maintain single calculated recovery stop on 1st hit and all subsequent hits
    SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
 
    //=== Shared basket TP only in RECOVERY phase =======================
