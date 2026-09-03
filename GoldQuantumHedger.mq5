@@ -24,10 +24,18 @@
 
 #include <Trade\Trade.mqh>
 
-//--- Auto-Compounding -----------------------------------------------
-input group "=== Auto-Compounding & Dynamic Growth ==="
-input bool     InpAutoCompounding     = false;  // Dynamic Auto-Compounding (Set true for Aggressive Accounts)
+//--- Auto-Compounding & Smart Lot Ceiling ----------------------------
+input group "=== Smart Auto-Compounding & Safety Ceiling ==="
+input bool     InpAutoCompounding     = true;   // Dynamic Auto-Compounding Growth
 input double   InpRiskDepositPer001   = 5000.0; // Equity Needed Per 0.01 Base Lot ($5,000 USD)
+input double   InpMaxBaseLot          = 0.03;   // Smart Max Base Lot Ceiling (0.03 Lot - Bulletproof Shield!)
+
+//--- Flash-Crash & Spread Protection --------------------------------
+input group "=== Flash-Crash & News Protection ==="
+input bool     InpUseFlashCrashShield = true;   // Flash-Crash & Extreme Spike Shield
+input double   InpMaxCandleRangeUSD   = 8.00;   // Extreme News Candle Range ($8.00 USD)
+input int      InpNewsPauseSec        = 180;    // Pause Duration After Extreme Spike (180 Sec / 3 Min)
+input double   InpWideSpreadPrice     = 0.80;   // Wide Spread News Shield ($0.80 USD)
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
@@ -84,7 +92,6 @@ input double   InpTrailingNetRatio    = 0.35;   // Basket Trailing Ratio
 input bool     InpHedgeFastExit       = true;   // Fast Hedged Exit ($2.00)
 input double   InpHedgeExitRatio      = 0.20;   // Fast Hedged Exit Ratio
 input double   InpSpreadPad           = 2.5;    // Spread Multiplier Padding
-input double   InpWideSpreadPrice     = 1.00;   // Max Allowed Spread ($1.00 USD - News Shield)
 input double   InpGapUSD              = 15.0;   // Gap Protection Threshold ($ USD)
 input double   InpMaxCycleLossUSD     = 0.0;    // Single Basket Circuit Breaker (0 = Pure Zone Recovery)
 input double   InpMaxAllowedDrawdownUSD = 0.0;  // Max Account Drawdown ($ USD, 0 = Pure Mathematical Recovery)
@@ -346,9 +353,9 @@ void OnTick()
             DrawVisual();
             return;
          }
-         if(WideSpread() || m_gapMode)
+         if(WideSpread() || m_gapMode || FlashCrashActive())
          {
-            m_state = m_gapMode ? "GAP — not arming" : "WIDE SPREAD — not arming";
+            m_state = FlashCrashActive() ? "FLASH CRASH SPIKE PAUSE" : (m_gapMode ? "GAP — not arming" : "WIDE SPREAD — not arming");
             DrawVisual();
             return;
          }
@@ -1082,8 +1089,27 @@ double DynamicStartLot()
    double mult = eq / InpRiskDepositPer001;
    double lot = InpStartLot * mult;
    if(lot < 0.01) lot = 0.01;
+   if(InpMaxBaseLot > 0 && lot > InpMaxBaseLot) lot = InpMaxBaseLot;
    if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
    return NormalizeLot(lot);
+}
+
+//+------------------------------------------------------------------+
+//| Flash Crash & Extreme Spike Shield Check                         |
+//+------------------------------------------------------------------+
+bool FlashCrashActive()
+{
+   if(!InpUseFlashCrashShield) return false;
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(_Symbol, PERIOD_M1, 0, 2, rates) >= 2)
+   {
+      double range0 = rates[0].high - rates[0].low;
+      double range1 = rates[1].high - rates[1].low;
+      if(range0 >= InpMaxCandleRangeUSD || range1 >= InpMaxCandleRangeUSD)
+         return true;
+   }
+   return false;
 }
 
 //+------------------------------------------------------------------+
