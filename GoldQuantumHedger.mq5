@@ -1877,9 +1877,44 @@ void DrawVisual()
    double step = GridStep();
    int    age  = CycleAgeMin();
 
-   HLine(VIS_PREFIX + "Buy",  NormalizeDouble(ask + step, _Digits), clrLime,    "BuyStop L1");
-   HLine(VIS_PREFIX + "Sell", NormalizeDouble(bid - step, _Digits), clrMagenta, "SellStop L1");
-   if(m_basketTP > 0) HLine(VIS_PREFIX + "TP", m_basketTP, clrAqua, "Basket TP");
+   // Clean previous visual lines
+   ObjectsDeleteAll(0, VIS_PREFIX + "Line_");
+
+   // Draw each active pending order line dynamically on the visual chart
+   int bCount = 0, sCount = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol) continue;
+      if((ulong)OrderGetInteger(ORDER_MAGIC) != InpMagicNumber) continue;
+
+      ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      double price = OrderGetDouble(ORDER_PRICE_OPEN);
+      double vol   = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      string comment = OrderGetString(ORDER_COMMENT);
+
+      bool isRecovery = (StringFind(comment, "Recovery") >= 0);
+
+      if(type == ORDER_TYPE_BUY_STOP)
+      {
+         bCount++;
+         string name = StringFormat("%sLine_Buy_%I64u", VIS_PREFIX, ticket);
+         color clr = isRecovery ? clrGold : clrDodgerBlue;
+         string label = StringFormat("[BUY STOP %s (%.2f @ %.*f)]", (isRecovery ? "REVERSAL" : StringFormat("#%d", bCount)), vol, _Digits, price);
+         HLine(name, price, clr, label);
+      }
+      else if(type == ORDER_TYPE_SELL_STOP)
+      {
+         sCount++;
+         string name = StringFormat("%sLine_Sell_%I64u", VIS_PREFIX, ticket);
+         color clr = isRecovery ? clrGold : clrOrangeRed;
+         string label = StringFormat("[SELL STOP %s (%.2f @ %.*f)]", (isRecovery ? "REVERSAL" : StringFormat("#%d", sCount)), vol, _Digits, price);
+         HLine(name, price, clr, label);
+      }
+   }
+
+   if(m_basketTP > 0) HLine(VIS_PREFIX + "TP", m_basketTP, clrLime, StringFormat(">>> BASKET TP (Target $%.2f)", CloseTarget()));
    else               ObjectDelete(0, VIS_PREFIX + "TP");
 
    string st = m_state;
@@ -1889,22 +1924,22 @@ void DrawVisual()
    double peakDisplay = (m_trendPeakNet > -1e8) ? m_trendPeakNet : 0.0;
 
    Comment(
-      "\n  v360.00  Trend Riding + Recovery + Breakout",
+      "\n  =======================================================",
+      "\n  ⚡ GoldQuantumHedger — 20-Order Signal Ladder System",
+      "\n  =======================================================",
       "\n  PHASE: ", m_phase,
-      "   Target $", DoubleToString(CloseTarget(), 2),
-      "   Peak $", DoubleToString(peakDisplay, 2),
-      "   age ", age, "m",
-      "\n  BasketTP ", (m_basketTP > 0 ? DoubleToString(m_basketTP, _Digits) : "-"),
-      "   Step ", DoubleToString(step, _Digits),
-      "   spread ", DoubleToString(ask - bid, 3),
-      "\n  Trail ", (m_trailActive ? "ON" : "off"),
-      "   RecTrailPeak $", DoubleToString((m_recoverTrailPeak > -1e8) ? m_recoverTrailPeak : 0.0, 2),
-      "\n  ---------------------------",
-      "\n  ", st,
-      "\n  Buy  pos ", buys,  "  lot ", DoubleToString(buyLot, 2),  "  $", DoubleToString(buyPft, 2),  "  pend ", buyPend,
-      "\n  Sell pos ", sells, "  lot ", DoubleToString(sellLot, 2), "  $", DoubleToString(sellPft, 2), "  pend ", sellPend,
-      "\n  NET  $ ", DoubleToString(net, 2),
-      "\n"
+      "   |   Target Profit: $", DoubleToString(CloseTarget(), 2),
+      "   |   Peak Net: $", DoubleToString(peakDisplay, 2),
+      "\n  Basket TP: ", (m_basketTP > 0 ? DoubleToString(m_basketTP, _Digits) : "-"),
+      "   |   Grid Step: $", DoubleToString(step, 2),
+      "   |   Spread: $", DoubleToString(ask - bid, 2),
+      "\n  -------------------------------------------------------",
+      "\n  STATUS: ", st,
+      "\n  -------------------------------------------------------",
+      "\n  🟢 BUY Positions:  ", buys,  "   Lots: ", DoubleToString(buyLot, 2),  "   Profit: $", DoubleToString(buyPft, 2),  "   (Pending: ", buyPend, ")",
+      "\n  🔴 SELL Positions: ", sells, "   Lots: ", DoubleToString(sellLot, 2), "   Profit: $", DoubleToString(sellPft, 2), "   (Pending: ", sellPend, ")",
+      "\n  💰 CURRENT NET PROFIT: $", DoubleToString(net, 2),
+      "\n  =======================================================\n"
    );
    ChartRedraw(0);
 }
@@ -1917,14 +1952,17 @@ void HLine(string name, double price, color clr, string text)
    {
       ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
       ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-      ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_SOLID);
       ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
       ObjectSetString(0, name, OBJPROP_TEXT, text);
    }
    else
+   {
       ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+   }
 }
 //+------------------------------------------------------------------+
 
