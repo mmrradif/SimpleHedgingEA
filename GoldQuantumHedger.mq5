@@ -24,9 +24,14 @@
 
 #include <Trade\Trade.mqh>
 
+//--- Auto-Compounding -----------------------------------------------
+input group "=== Auto-Compounding & Dynamic Growth ==="
+input bool     InpAutoCompounding     = false;  // Dynamic Auto-Compounding (Set true for Aggressive Accounts)
+input double   InpRiskDepositPer001   = 5000.0; // Equity Needed Per 0.01 Base Lot ($5,000 USD)
+
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD)
+input double   InpCloseProfitUSD      = 5.00;   // Base Take Profit Target ($5.00 USD per 0.01 lot)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
@@ -39,7 +44,7 @@ input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
-input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
+input double   InpStartLot            = 0.01;   // Base Initial Lot Size (0.01)
 input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
 input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
@@ -1066,6 +1071,22 @@ int CycleAgeMin()
 }
 
 //+------------------------------------------------------------------+
+//| Dynamic Base Lot (Auto-Compounding Balance Multiplier)           |
+//+------------------------------------------------------------------+
+double DynamicStartLot()
+{
+   if(!InpAutoCompounding) return InpStartLot;
+   double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(eq <= 0) eq = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(eq <= 0) eq = InpRiskDepositPer001;
+   double mult = eq / InpRiskDepositPer001;
+   double lot = InpStartLot * mult;
+   if(lot < 0.01) lot = 0.01;
+   if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
+   return NormalizeLot(lot);
+}
+
+//+------------------------------------------------------------------+
 //| Close target — dynamic TP scaling in RECOVERY phase.             |
 //+------------------------------------------------------------------+
 double CloseTarget()
@@ -1076,9 +1097,10 @@ double CloseTarget()
    if(InpBreakEvenAfterMin > 0 && age >= InpBreakEvenAfterMin)
       return 0.0;
 
-   double t = InpCloseProfitUSD;
+   double baseLot = DynamicStartLot();
+   double scale = (InpStartLot > 0) ? (baseLot / InpStartLot) : 1.0;
+   double t = InpCloseProfitUSD * scale;
 
-   // Check hedged ping-pong state
    int buys = 0, sells = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -1089,18 +1111,21 @@ double CloseTarget()
    }
    int legs = buys + sells;
 
-   // Lightning-Fast Hedged Escape & Time-Decay Exit:
-   if(buys > 0 && sells > 0)
+   // Hedged Recovery Fast Exit: when both sides are open, take fast profit
+   if(InpHedgeFastExit && m_phase == "RECOVERY")
    {
-      t = 1.50; // Hedged basket: quick $1.50 escape target!
-      if(legs >= 4)
-         t = 0.50; // 4+ legs open: $0.50 instant escape!
-      else if(legs >= 2)
-         t = 1.00; // 2-3 legs open: $1.00 fast escape!
+      if(buys > 0 && sells > 0)
+      {
+         t = 1.50 * scale; // Hedged basket: quick $1.50 escape target!
+         if(legs >= 4)
+            t = 0.50 * scale; // 4+ legs open: $0.50 instant escape!
+         else if(legs >= 2)
+            t = 1.00 * scale; // 2-3 legs open: $1.00 fast escape!
+      }
    }
    else if(InpScaleTPWithLegs && m_phase == "RECOVERY")
    {
-      if(legs > 1) t = InpCloseProfitUSD * (1.0 + (legs - 1) * MathMax(InpTPScaleFactor, 0.0));
+      if(legs > 1) t = (InpCloseProfitUSD * scale) * (1.0 + (legs - 1) * MathMax(InpTPScaleFactor, 0.0));
    }
 
    if(t < 0.02) t = 0.02;
@@ -1391,13 +1416,14 @@ int PlaceGrid(ENUM_ORDER_TYPE type)
    double minSafetyGap = MathMax(spread * 2.0, point * 30);
    if(step < minSafetyGap) step = minSafetyGap;
 
-   // 5-level fixed progression: Stop 1-2 = 0.01, Stop 3-4 = 0.02, Stop 5 = 0.03
+   // Auto-Compounding dynamic progression:
+   double baseLot = DynamicStartLot();
    for(int i = 0; i < n; i++)
    {
-      double lot = InpStartLot;
-      if(i >= 4)      lot = InpStartLot * 3.0; // 0.03 lot
-      else if(i >= 2) lot = InpStartLot * 2.0; // 0.02 lot
-      else            lot = InpStartLot * 1.0; // 0.01 lot
+      double lot = baseLot;
+      if(i >= 4)      lot = baseLot * 3.0;
+      else if(i >= 2) lot = baseLot * 2.0;
+      else            lot = baseLot * 1.0;
 
       if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
       lot = NormalizeLot(lot);
