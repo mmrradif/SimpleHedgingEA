@@ -39,16 +39,16 @@ input double   InpWideSpreadPrice     = 1.00;   // Wide Spread News Shield ($1.0
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD per cycle)
+input double   InpCloseProfitUSD      = 50.00;  // Master Overall Basket Take Profit Target ($50.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
-input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg (+$2.50 per leg)
+input bool     InpScaleTPWithLegs     = false;  // Fixed $50 Master Target
+input double   InpTPScaleFactor       = 0.00;   // TP Scale Factor
 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Mega-Wave Trend Riding ==="
-input bool     InpTrendRide           = true;   // Mega-Wave Trend Riding Mode
-input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($3.00 USD)
-input double   InpTrendTrailRatio     = 0.25;   // Lock 75% of Peak Runaway Profit (25% Trail)
+input bool     InpTrendRide           = true;   // Mega-Wave Trend Riding Mode (Keep Standing 20-Grid)
+input double   InpTrendMinPeak        = 5.00;   // Trailing Start Peak ($5.00 USD)
+input double   InpTrendTrailRatio     = 0.20;   // Lock 80% of Peak Runaway Profit (20% Trail)
 
 //--- PMax (Profit Maximizer by KivancOzbilgic) ----------------------
 input group "=== PMax (Profit Maximizer) Trend Signal ==="
@@ -60,20 +60,20 @@ input ENUM_TIMEFRAMES InpPMaxTF       = PERIOD_CURRENT; // PMax Timeframe
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
-input double   InpStartLot            = 0.05;   // Base Initial Lot Size (0.05 Lot)
+input double   InpStartLot            = 0.01;   // 0.01 Lot Base (All 20 Grid Orders @ 0.01)
 input int      InpMaxGridLevels       = 20;     // 20 Standing Stop Orders in Signal Direction!
-input double   InpGridStepUSD         = 3.50;   // Grid Step Spacing ($3.50 chart move per level)
+input double   InpGridStepUSD         = 3.00;   // Grid Step Spacing ($3.00 chart move per level)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.0;    // ATR Multiplier
 
 //--- Reversal / recovery --------------------------------------------
-input group "=== Dominant Recovery Engine ==="
-input double   InpFirstTriggerUSD     = 4.00;   // 1st Recovery Trigger ($4.00)
-input double   InpReverseTriggerUSD   = 6.00;   // 2nd+ Recovery Trigger ($6.00)
-input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (300 Sec)
-input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
-input double   InpRecoverMoveUSD      = 3.50;   // Dominant Recovery Move Target ($3.50)
+input group "=== Dynamic Calculated Reversal Engine ==="
+input double   InpFirstTriggerUSD     = 0.00;   // Immediate Reversal Stop on 1st Hit ($0.00)
+input double   InpReverseTriggerUSD   = 0.00;   // Immediate Calculated Reversal on All Legs ($0.00)
+input int      InpReverseAfterSec     = 0;      // Immediate Arming (0 Sec)
+input double   InpReverseDistUSD      = 3.50;   // Recovery Stop Distance ($3.50)
+input double   InpRecoverMoveUSD      = 3.00;   // Dominant Recovery Move Target ($3.00)
 input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Dominant Squeeze)
 input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
 input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped for Mathematical Precision)
@@ -1277,16 +1277,17 @@ bool WantRecovery(int pos, double net, int recDir, double totalLots)
    if(pos <= 0) return false;
    if(pos >= 10) return false;
 
-   // 1st recovery only arms when net dips below -$4.00 trigger
+   // Immediate Reversal Arming: As soon as 1 or more orders hit, arm the calculated reversal stop!
+   if(InpFirstTriggerUSD <= 0.0) return true;
+
    if(pos == 1)
    {
-      double trig = -MathMax(InpFirstTriggerUSD, 1.00);
-      if(net > trig) return false; // In profit or small dip -> let trade hit TP freely!
+      double trig = -InpFirstTriggerUSD;
+      if(net > trig) return false;
    }
    else
    {
-      // 2nd+ recovery legs only arm when basket dips below -$6.00 trigger
-      double trig = -MathMax(InpReverseTriggerUSD, 2.00);
+      double trig = -InpReverseTriggerUSD;
       if(net > trig) return false;
    }
    return true;
