@@ -342,16 +342,6 @@ void OnTick()
       ResetCycleState();
 
       // Trend Filter Refresh: if trend shifted while pending was waiting, update to new trend
-      if(InpUseTrendFilter && (buyPend + sellPend) > 0)
-      {
-         int tDir = TrendDir();
-         if((tDir > 0 && sellPend > 0) || (tDir < 0 && buyPend > 0))
-         {
-            DeletePendings();
-            buyPend = 0; sellPend = 0;
-         }
-      }
-
       int wanted = MathMax(InpMaxGridLevels, 1) * 2;
       if(buyPend + sellPend == 0)
       {
@@ -369,10 +359,9 @@ void OnTick()
          }
          PrintFormat("[ARM] %d BuyStop + %d SellStop standing @ %.2f (step %.*f)",
                      InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
-         int tDir = TrendDir();
          int placed = 0;
-         if(tDir >= 0) placed += PlaceGrid(ORDER_TYPE_BUY_STOP);
-         if(tDir <= 0) placed += PlaceGrid(ORDER_TYPE_SELL_STOP);
+         placed += PlaceGrid(ORDER_TYPE_BUY_STOP);
+         placed += PlaceGrid(ORDER_TYPE_SELL_STOP);
          if(placed == 0)
          {
             m_armRetryUntil = TimeCurrent() + 5;
