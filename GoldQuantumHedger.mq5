@@ -26,16 +26,16 @@
 
 //--- Auto-Compounding & Smart Lot Ceiling ----------------------------
 input group "=== Smart Auto-Compounding & Safety Ceiling ==="
-input bool     InpAutoCompounding     = true;   // Dynamic Auto-Compounding Growth
+input bool     InpAutoCompounding     = false;  // Dynamic Auto-Compounding (Set true for aggressive growth)
 input double   InpRiskDepositPer001   = 5000.0; // Equity Needed Per 0.01 Base Lot ($5,000 USD)
 input double   InpMaxBaseLot          = 0.03;   // Smart Max Base Lot Ceiling (0.03 Lot - Bulletproof Shield!)
 
 //--- Flash-Crash & Spread Protection --------------------------------
 input group "=== Flash-Crash & News Protection ==="
-input bool     InpUseFlashCrashShield = true;   // Flash-Crash & Extreme Spike Shield
+input bool     InpUseFlashCrashShield = false;  // Flash-Crash & Extreme Spike Shield
 input double   InpMaxCandleRangeUSD   = 8.00;   // Extreme News Candle Range ($8.00 USD)
 input int      InpNewsPauseSec        = 180;    // Pause Duration After Extreme Spike (180 Sec / 3 Min)
-input double   InpWideSpreadPrice     = 0.80;   // Wide Spread News Shield ($0.80 USD)
+input double   InpWideSpreadPrice     = 1.00;   // Wide Spread News Shield ($1.00 USD)
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
@@ -1242,6 +1242,13 @@ double RecoveryLot(int recDir, double net, double distToHit,
    // STRICT HARD CEILING: Never exceed InpMaxLot under any circumstance!
    if(InpMaxLot > 0 && lot > InpMaxLot) 
       lot = InpMaxLot;
+
+   // STRICT TOTAL BASKET CEILING: Never let entire basket volume exceed InpMaxBasketLots!
+   if(InpMaxBasketLots > 0 && (totalLots + lot) > InpMaxBasketLots)
+   {
+      lot = InpMaxBasketLots - totalLots;
+      if(lot < InpStartLot) return 0.0; // Hard basket cap reached!
+   }
 
    if(lot < InpStartLot) lot = InpStartLot;
    return NormalizeLot(lot);
