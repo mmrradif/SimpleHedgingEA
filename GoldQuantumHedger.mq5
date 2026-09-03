@@ -825,14 +825,7 @@ void SyncSinglePending(int activeDir, int buys, int sells,
 
    int pos = buys + sells;
    int recDir = -activeDir;
-   ENUM_ORDER_TYPE recType  = (recDir > 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
-   ENUM_ORDER_TYPE deadType = (recDir > 0) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
-
-   // In TRENDING phase with TrendRide active, keep same-dir pendings to ride the trend
-   if(!InpTrendRide || m_phase == "RECOVERY")
-   {
-      DeleteAllOfType(deadType);
-   }
+   ENUM_ORDER_TYPE recType = (recDir > 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
 
    if(!WantRecovery(pos, net, recDir, buyLot + sellLot))
    {
@@ -847,11 +840,9 @@ void SyncSinglePending(int activeDir, int buys, int sells,
    SortPendings(recType, t, p);
    int have = ArraySize(t);
 
-   if(m_phase == "RECOVERY")
-   {
-      for(int i = 1; i < have; i++)      // only ONE recovery stop during recovery phase
-         m_trade.OrderDelete(t[i]);
-   }
+   // Only keep ONE opposite recovery stop — same-direction 20 grid stops are NEVER deleted!
+   for(int i = 1; i < have; i++)
+      m_trade.OrderDelete(t[i]);
 
    double minDist = MinDist();
    double revDist = ReverseMinDist();
