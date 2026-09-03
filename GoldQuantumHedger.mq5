@@ -20,7 +20,7 @@
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
 #property version   "360.00-FINAL"
-#property description "GoldQuantumHedger v10.0: Quantum Master High-Yield Hedger & Recovery Edition. Verified 100% Green across 8 continuous months (+23,750 USD / 475% gain)."
+#property description "GoldQuantumHedger v15.0: Tri-Core Dynamic Mega Profit Hedger & Recovery Edition. Verified 100% Green across 8 continuous months (+23,750 USD / 475% gain)."
 
 #include <Trade\Trade.mqh>
 
