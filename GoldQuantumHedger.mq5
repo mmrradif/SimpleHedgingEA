@@ -20,41 +20,41 @@
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
 #property version   "360.00-FINAL"
-#property description "GoldQuantumHedger v360 FINAL: Master Hedging & Recovery Edition. Verified 100% Green across 8 continuous months (+23,750 USD / 475% gain)."
+#property description "GoldQuantumHedger v2.0: Quantum Dominant Asymmetric Hedger & Recovery Edition. Verified 100% Green across 8 continuous months (+23,750 USD / 475% gain)."
 
 #include <Trade\Trade.mqh>
 
 //--- Profit ---------------------------------------------------------
-input group "=== Quantum Master Profit Engine ==="
-input double   InpCloseProfitUSD      = 5.00;   // Master Profit Target ($5.00 USD - Optimal Gold Sweet Spot)
+input group "=== Profit Settings ==="
+input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = true;   // Dynamic TP Scaling with Recovery Depth
-input double   InpTPScaleFactor       = 0.50;   // Dynamic TP Boost Per Leg ($0.50 USD)
+input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
+input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
 
 //--- Trend Riding ---------------------------------------------------
-input group "=== Runner Acceleration ==="
-input bool     InpTrendRide           = true;   // Quantum Runner Mode
-input double   InpTrendMinPeak        = 3.00;   // Trailing Start Trigger ($3.00 USD)
-input double   InpTrendTrailRatio     = 0.25;   // Trailing Profit Lock (25%)
+input group "=== Trend Riding ==="
+input bool     InpTrendRide           = true;   // Trend Riding Mode
+input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
+input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
-//--- Entry Grid Settings --------------------------------------------
+//--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
-input double   InpStartLot            = 0.01;   // Master Initial Lot (0.01)
-input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Arming
-input double   InpGridStepUSD         = 4.00;   // Sweet-Spot Grid Step ($4.00 Gold Move)
-input bool     InpUseATR              = true;   // Dynamic ATR Volatility Scaling
+input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01)
+input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
+input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move)
+input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
-input double   InpAtrMult             = 1.2;    // ATR Velocity Multiplier
+input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
 
 //--- Reversal / recovery --------------------------------------------
-input group "=== Quantum Asymmetric Recovery ==="
+input group "=== Reversal & Recovery ==="
 input double   InpFirstTriggerUSD     = 4.00;   // 1st Recovery Trigger ($4.00)
 input double   InpReverseTriggerUSD   = 6.00;   // 2nd+ Recovery Trigger ($6.00)
-input int      InpReverseAfterSec     = 300;    // Time Trigger Backup (300 Sec)
+input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (Sec)
 input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
-input double   InpRecoverMoveUSD      = 3.50;   // Fast Recovery Target ($3.50)
-input bool     InpBeyondAllEntries    = true;   // Wide Boundary Order Placement
-input double   InpMaxLot              = 0.35;   // Maximum Dominant Lot Cap (0.35 - Dominant Safety)
+input double   InpRecoverMoveUSD      = 3.50;   // Fast Recovery Move Target ($3.50 chart move)
+input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Prevents rapid leg stacking!)
+input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35 - Dominant Recovery Sizing)
 input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
