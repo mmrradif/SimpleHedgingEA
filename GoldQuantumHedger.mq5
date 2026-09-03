@@ -39,37 +39,45 @@ input double   InpWideSpreadPrice     = 1.00;   // Wide Spread News Shield ($1.0
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 3.00;   // Micro Scalp Take Profit ($3.00 USD)
+input double   InpCloseProfitUSD      = 10.00;  // Super Take Profit Target ($10.00 USD per cycle)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = false;  // Fixed Micro TP (No deep lingering baskets!)
-input double   InpTPScaleFactor       = 0.20;   // TP Increase Factor per Leg
+input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
+input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg (+$5.00 per leg)
 
 //--- Trend Riding ---------------------------------------------------
-input group "=== Trend Riding ==="
-input bool     InpTrendRide           = true;   // Trend Riding Mode
-input double   InpTrendMinPeak        = 2.00;   // Trailing Start Peak ($2.00 USD)
-input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
+input group "=== Mega-Wave Trend Riding ==="
+input bool     InpTrendRide           = true;   // Mega-Wave Trend Riding Mode
+input double   InpTrendMinPeak        = 5.00;   // Trailing Start Peak ($5.00 USD)
+input double   InpTrendTrailRatio     = 0.20;   // Lock 80% of Peak Runaway Profit (20% Trail)
+
+//--- PMax (Profit Maximizer by KivancOzbilgic) ----------------------
+input group "=== PMax (Profit Maximizer) Trend Signal ==="
+input bool     InpUsePMax             = true;   // Enable KivancOzbilgic PMax Trend Filter
+input int      InpPMaxAtrPeriod       = 10;     // PMax ATR Length (10)
+input double   InpPMaxMultiplier      = 3.0;    // PMax ATR Multiplier (3.0)
+input int      InpPMaxMALength        = 10;     // PMax Moving Average Length (10 EMA)
+input ENUM_TIMEFRAMES InpPMaxTF       = PERIOD_CURRENT; // PMax Timeframe
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // Base Initial Lot Size (0.01)
-input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
-input double   InpGridStepUSD         = 3.00;   // Tight Grid Step ($3.00 chart move)
+input int      InpMaxGridLevels       = 20;     // 20 BuyStop / 20 SellStop Standing Grid!
+input double   InpGridStepUSD         = 3.00;   // Dynamic Grid Step ($3.00 chart move)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
-input double   InpAtrMult             = 1.0;    // ATR Multiplier
+input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
 
 //--- Reversal / recovery --------------------------------------------
-input group "=== Reversal & Recovery ==="
-input double   InpFirstTriggerUSD     = 3.00;   // 1st Recovery Trigger ($3.00)
-input double   InpReverseTriggerUSD   = 4.00;   // 2nd+ Recovery Trigger ($4.00)
-input int      InpReverseAfterSec     = 180;    // Fast Recovery Time Trigger (180 Sec)
-input double   InpReverseDistUSD      = 3.00;   // Recovery Stop Distance ($3.00)
-input double   InpRecoverMoveUSD      = 2.50;   // Quick Escape Target ($2.50)
-input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
-input double   InpMaxLot              = 0.05;   // HARD MAX SINGLE LOT CAP (0.05 - ZERO -$4,000-$5,000 Floating Trades!)
-input double   InpMaxBasketLots       = 0.15;   // HARD TOTAL BASKET CAP (0.15 Lots Max Volume!)
-input int      InpMaxRecoveryLegs     = 4;      // Max Recovery Legs (Strict 4-Leg Cap)
+input group "=== Dominant Recovery Engine ==="
+input double   InpFirstTriggerUSD     = 5.00;   // 1st Recovery Trigger ($5.00)
+input double   InpReverseTriggerUSD   = 7.00;   // 2nd+ Recovery Trigger ($7.00)
+input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (300 Sec)
+input double   InpReverseDistUSD      = 4.50;   // Recovery Stop Distance ($4.50)
+input double   InpRecoverMoveUSD      = 4.00;   // Dominant Recovery Move Target ($4.00)
+input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Dominant Squeeze)
+input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35 - Dominant Recovery Sizing)
+input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped for Dominant Math)
+input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
 input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
 input bool     InpBreakoutRecovery    = false;  // Breakout Recovery Mode
@@ -1159,10 +1167,95 @@ double CloseTarget()
 }
 
 //+------------------------------------------------------------------+
-//| Higher-TF trend. +1 up, -1 down, 0 unknown.                      |
+//| PMax (Profit Maximizer by KivancOzbilgic) Trend Calculator       |
+//| Returns +1 for Bullish (MAvg > PMax), -1 for Bearish (MAvg < PMax)|
+//+------------------------------------------------------------------+
+int CalculatePMaxDirection(int bars = 100)
+{
+   if(bars < 30) bars = 100;
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   ENUM_TIMEFRAMES tf = (InpPMaxTF == PERIOD_CURRENT) ? _Period : InpPMaxTF;
+   int copied = CopyRates(_Symbol, tf, 0, bars, rates);
+   if(copied < 30) return 0;
+   
+   int atrPeriod = InpPMaxAtrPeriod;
+   double multiplier = InpPMaxMultiplier;
+   int emaLength = InpPMaxMALength;
+   
+   // 1. Calculate HL2 and True Range
+   double hl2[];
+   double trVal[];
+   ArrayResize(hl2, copied);
+   ArrayResize(trVal, copied);
+   
+   for(int i = copied - 1; i >= 0; i--)
+   {
+      hl2[i] = (rates[i].high + rates[i].low) * 0.5;
+      if(i == copied - 1)
+         trVal[i] = rates[i].high - rates[i].low;
+      else
+      {
+         double tr1 = rates[i].high - rates[i].low;
+         double tr2 = MathAbs(rates[i].high - rates[i+1].close);
+         double tr3 = MathAbs(rates[i].low - rates[i+1].close);
+         trVal[i] = MathMax(tr1, MathMax(tr2, tr3));
+      }
+   }
+   
+   // 2. EMA of HL2 (MAvg)
+   double mavg[];
+   ArrayResize(mavg, copied);
+   double alpha = 2.0 / (emaLength + 1.0);
+   mavg[copied - 1] = hl2[copied - 1];
+   for(int i = copied - 2; i >= 0; i--)
+      mavg[i] = alpha * hl2[i] + (1.0 - alpha) * mavg[i+1];
+      
+   // 3. Wilder's ATR
+   double atrArr[];
+   ArrayResize(atrArr, copied);
+   atrArr[copied - 1] = trVal[copied - 1];
+   for(int i = copied - 2; i >= 0; i--)
+      atrArr[i] = (atrArr[i+1] * (atrPeriod - 1) + trVal[i]) / atrPeriod;
+      
+   // 4. Trailing PMax calculation
+   double longStop = 0, shortStop = 0;
+   double longStopPrev = 0, shortStopPrev = 0;
+   int dir = 1;
+   
+   for(int i = copied - 15; i >= 0; i--)
+   {
+      double curAtr = atrArr[i];
+      double curMA  = mavg[i];
+      
+      longStop = curMA - multiplier * curAtr;
+      if(i < copied - 15 && curMA > longStopPrev)
+         longStop = MathMax(longStop, longStopPrev);
+         
+      shortStop = curMA + multiplier * curAtr;
+      if(i < copied - 15 && curMA < shortStopPrev)
+         shortStop = MathMin(shortStop, shortStopPrev);
+         
+      if(dir == -1 && curMA > shortStopPrev)
+         dir = 1;
+      else if(dir == 1 && curMA < longStopPrev)
+         dir = -1;
+         
+      longStopPrev  = longStop;
+      shortStopPrev = shortStop;
+   }
+   
+   return dir;
+}
+
+//+------------------------------------------------------------------+
+//| Trend Direction (+1 Up, -1 Down, 0 Neutral)                      |
 //+------------------------------------------------------------------+
 int TrendDir()
 {
+   if(InpUsePMax)
+      return CalculatePMaxDirection();
+      
    if(!InpUseTrendFilter) return 0;
    if(m_emaFast == INVALID_HANDLE || m_emaSlow == INVALID_HANDLE) return 0;
    double f[], s[];
