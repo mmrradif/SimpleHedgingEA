@@ -26,7 +26,7 @@
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD)
+input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD - Master Golden Setting)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
 input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
 input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
@@ -34,14 +34,14 @@ input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg
 //--- Trend Riding ---------------------------------------------------
 input group "=== Trend Riding ==="
 input bool     InpTrendRide           = true;   // Trend Riding Mode
-input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($ USD)
+input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($3.00 USD)
 input double   InpTrendTrailRatio     = 0.25;   // Trailing Drop Ratio (25%)
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
-input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01 - Master Safe Sizing)
+input double   InpStartLot            = 0.01;   // Initial Lot Size (0.01 - Master Safe Base)
 input int      InpMaxGridLevels       = 1;      // 1 BuyStop + 1 SellStop Clean Initial Arming
-input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 chart move)
+input double   InpGridStepUSD         = 4.00;   // Grid Step Distance ($4.00 Master Proven Step)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.2;    // ATR Multiplier (News Volatility Shield)
