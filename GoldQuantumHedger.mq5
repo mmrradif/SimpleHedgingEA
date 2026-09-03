@@ -39,16 +39,16 @@ input double   InpWideSpreadPrice     = 1.00;   // Wide Spread News Shield ($1.0
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 100.00; // Overall Basket Take Profit Target ($100.00 USD)
+input double   InpCloseProfitUSD      = 5.00;   // Take Profit Target ($5.00 USD per cycle)
 input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = false;  // Fixed $100 Target (All trades close at $100 net profit)
-input double   InpTPScaleFactor       = 0.00;   // TP Scale Factor
+input bool     InpScaleTPWithLegs     = true;   // Scale TP with Recovery Depth
+input double   InpTPScaleFactor       = 0.50;   // TP Increase Factor per Leg (+$2.50 per leg)
 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Mega-Wave Trend Riding ==="
 input bool     InpTrendRide           = true;   // Mega-Wave Trend Riding Mode
-input double   InpTrendMinPeak        = 10.00;  // Trailing Start Peak ($10.00 USD)
-input double   InpTrendTrailRatio     = 0.20;   // Lock 80% of Peak Runaway Profit (20% Trail)
+input double   InpTrendMinPeak        = 3.00;   // Trailing Start Peak ($3.00 USD)
+input double   InpTrendTrailRatio     = 0.25;   // Lock 75% of Peak Runaway Profit (25% Trail)
 
 //--- PMax (Profit Maximizer by KivancOzbilgic) ----------------------
 input group "=== PMax (Profit Maximizer) Trend Signal ==="
@@ -60,23 +60,23 @@ input ENUM_TIMEFRAMES InpPMaxTF       = PERIOD_CURRENT; // PMax Timeframe
 
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
-input double   InpStartLot            = 0.01;   // 0.01 Lot Base (All 20 Grid Orders @ 0.01)
+input double   InpStartLot            = 0.05;   // Base Initial Lot Size (0.05 Lot)
 input int      InpMaxGridLevels       = 20;     // 20 Standing Stop Orders in Signal Direction!
-input double   InpGridStepUSD         = 3.00;   // Grid Step Spacing ($3.00 chart move per level)
+input double   InpGridStepUSD         = 3.50;   // Grid Step Spacing ($3.50 chart move per level)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
 input double   InpAtrMult             = 1.0;    // ATR Multiplier
 
 //--- Reversal / recovery --------------------------------------------
 input group "=== Dominant Recovery Engine ==="
-input double   InpFirstTriggerUSD     = 5.00;   // 1st Recovery Trigger ($5.00)
-input double   InpReverseTriggerUSD   = 7.00;   // 2nd+ Recovery Trigger ($7.00)
+input double   InpFirstTriggerUSD     = 4.00;   // 1st Recovery Trigger ($4.00)
+input double   InpReverseTriggerUSD   = 6.00;   // 2nd+ Recovery Trigger ($6.00)
 input int      InpReverseAfterSec     = 300;    // Recovery Time Trigger (300 Sec)
-input double   InpReverseDistUSD      = 4.50;   // Recovery Stop Distance ($4.50)
-input double   InpRecoverMoveUSD      = 4.00;   // Dominant Recovery Move Target ($4.00)
+input double   InpReverseDistUSD      = 4.00;   // Recovery Stop Distance ($4.00)
+input double   InpRecoverMoveUSD      = 3.50;   // Dominant Recovery Move Target ($3.50)
 input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Dominant Squeeze)
-input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35 - Dominant Recovery Sizing)
-input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped for Dominant Math)
+input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
+input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped for Mathematical Precision)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
 input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
 input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
