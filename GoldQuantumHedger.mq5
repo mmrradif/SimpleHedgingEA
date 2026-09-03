@@ -46,8 +46,8 @@ input double   InpTPScaleFactor       = 0.00;   // TP Scale Factor
 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Mega-Wave Trend Riding ==="
-input bool     InpTrendRide           = true;   // Mega-Wave Trend Riding Mode (Keep Standing 20-Grid)
-input double   InpTrendMinPeak        = 5.00;   // Trailing Start Peak ($5.00 USD)
+input bool     InpTrendRide           = false;  // Strict $50 Target (False = No early micro exit)
+input double   InpTrendMinPeak        = 50.00;  // Trailing Start Peak ($50.00 USD)
 input double   InpTrendTrailRatio     = 0.20;   // Lock 80% of Peak Runaway Profit (20% Trail)
 
 //--- PMax (Profit Maximizer by KivancOzbilgic) ----------------------
@@ -95,9 +95,9 @@ input bool     InpOneTradePerTick     = true;   // One Trade Per Tick Lock
 input int      InpCooldownSec         = 5;      // Cooldown Seconds after Exit
 input int      InpBreakEvenAfterMin   = 0;      // Break-Even Exit Timer (0 = Disabled for Full TP Hits)
 input int      InpForceCloseAfterMin  = 0;      // Hard Time Stop (0 = Off)
-input bool     InpUseTrailingNet      = true;   // Basket Trailing Net Lock
+input bool     InpUseTrailingNet      = false;  // Basket Trailing Net Lock (False = Full $50 TP)
 input double   InpTrailingNetRatio    = 0.35;   // Basket Trailing Ratio
-input bool     InpHedgeFastExit       = true;   // Fast Hedged Exit ($2.00)
+input bool     InpHedgeFastExit       = false;  // Fast Hedged Exit (False = Full $50 TP)
 input double   InpHedgeExitRatio      = 0.20;   // Fast Hedged Exit Ratio
 input double   InpSpreadPad           = 2.5;    // Spread Multiplier Padding
 input double   InpGapUSD              = 15.0;   // Gap Protection Threshold ($ USD)
@@ -1120,33 +1120,6 @@ double CloseTarget()
    double baseLot = DynamicStartLot();
    double scale = (InpStartLot > 0) ? (baseLot / InpStartLot) : 1.0;
    double t = InpCloseProfitUSD * scale;
-
-   int buys = 0, sells = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong tk = PositionGetTicket(i);
-      if(!OursPos(tk)) continue;
-      if((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) buys++;
-      else sells++;
-   }
-   int legs = buys + sells;
-
-   // Hedged Recovery Fast Exit: when both sides are open, take fast profit
-   if(InpHedgeFastExit && m_phase == "RECOVERY")
-   {
-      if(buys > 0 && sells > 0)
-      {
-         t = 1.50 * scale; // Hedged basket: quick $1.50 escape target!
-         if(legs >= 4)
-            t = 0.50 * scale; // 4+ legs open: $0.50 instant escape!
-         else if(legs >= 2)
-            t = 1.00 * scale; // 2-3 legs open: $1.00 fast escape!
-      }
-   }
-   else if(InpScaleTPWithLegs && m_phase == "RECOVERY")
-   {
-      if(legs > 1) t = (InpCloseProfitUSD * scale) * (1.0 + (legs - 1) * MathMax(InpTPScaleFactor, 0.0));
-   }
 
    if(t < 0.02) t = 0.02;
    return t;
