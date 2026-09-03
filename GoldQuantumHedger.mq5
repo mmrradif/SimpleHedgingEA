@@ -359,11 +359,15 @@ void OnTick()
             DrawVisual();
             return;
          }
-         PrintFormat("[ARM] %d BuyStop + %d SellStop standing @ %.2f (step %.*f)",
-                     InpMaxGridLevels, InpMaxGridLevels, InpStartLot, _Digits, GridStep());
+         int tDir = TrendDir();
+         PrintFormat("[ARM] %d %s standing @ %.2f (step %.*f) based on Signal",
+                     InpMaxGridLevels, (tDir >= 0 ? "BuyStop" : "SellStop"), InpStartLot, _Digits, GridStep());
          int placed = 0;
-         placed += PlaceGrid(ORDER_TYPE_BUY_STOP);
-         placed += PlaceGrid(ORDER_TYPE_SELL_STOP);
+         if(tDir >= 0)
+            placed += PlaceGrid(ORDER_TYPE_BUY_STOP);
+         else
+            placed += PlaceGrid(ORDER_TYPE_SELL_STOP);
+
          if(placed == 0)
          {
             m_armRetryUntil = TimeCurrent() + 5;
@@ -373,7 +377,7 @@ void OnTick()
       else if(WideSpread() || m_gapMode)
          StretchPendingsFarther();
 
-      m_state = StringFormat("ARMED — %d BuyStop + %d SellStop standing", InpMaxGridLevels, InpMaxGridLevels);
+      m_state = StringFormat("ARMED — %d %s standing", InpMaxGridLevels, (TrendDir() >= 0 ? "BuyStop" : "SellStop"));
       DrawVisual();
       return;
    }
