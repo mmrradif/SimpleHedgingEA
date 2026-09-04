@@ -1,26 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                              GoldQuantumHedger.mq5 |
-//|  v360 — Three-Phase: Trend Riding + Recovery + Breakout          |
-//|                                                                  |
-//|  HARD GUARANTEES                                                 |
-//|   * ONE position per tick (TRENDING: same-dir exception applies) |
-//|   * While live in RECOVERY/BREAKOUT: AT MOST ONE pending order.  |
-//|   * Every open position carries a shared BASKET TP price. When   |
-//|     price touches it the whole basket closes in profit by TP,    |
-//|     even if the EA misses ticks.                                 |
-//|                                                                  |
-//|  THREE-PHASE FLOW                                                |
-//|   1. Flat  -> arm 20 BuyStop + 20 SellStop (0.01->0.12) advance.  |
-//|   2. Pre-calculated geometry across all 20 levels!               |
-//|   3. Zero mid-trade deletions: all 40 orders stand in advance!    |
-//|   4. Whichever way market moves, that side's volume dominates     |
-//|      and converts entire basket into net profit!                 |
-//|   5. GLOBAL BASKET EXIT: closes all in profit -> next candle.    |
+//|  v360 — Tri-Core Dynamic Mega Profit Hedger & Recovery System     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "360.00-FINAL"
-#property description "GoldQuantumHedger v15.0: Tri-Core Dynamic Mega Profit Hedger & Recovery Edition. Verified 100% Green across 8 continuous months (+23,750 USD / 475% gain)."
+#property version   "16.00"
+#property description "GoldQuantumHedger v16.0: 20-Order Signal Grid + Dynamic Single Reversal & Alternating Recovery Hedger."
 
 #include <Trade\Trade.mqh>
 
@@ -28,7 +13,7 @@
 input group "=== Smart Auto-Compounding & Safety Ceiling ==="
 input bool     InpAutoCompounding     = false;  // Dynamic Auto-Compounding (Set true for aggressive growth)
 input double   InpRiskDepositPer001   = 5000.0; // Equity Needed Per 0.01 Base Lot ($5,000 USD)
-input double   InpMaxBaseLot          = 0.03;   // Smart Max Base Lot Ceiling (0.03 Lot - Bulletproof Shield!)
+input double   InpMaxBaseLot          = 0.03;   // Smart Max Base Lot Ceiling (0.03 Lot)
 
 //--- Flash-Crash & Spread Protection --------------------------------
 input group "=== Flash-Crash & News Protection ==="
@@ -39,15 +24,15 @@ input double   InpWideSpreadPrice     = 1.00;   // Wide Spread News Shield ($1.0
 
 //--- Profit ---------------------------------------------------------
 input group "=== Profit Settings ==="
-input double   InpCloseProfitUSD      = 50.00;  // Master Overall Basket Take Profit Target ($50.00 USD)
-input bool     InpUseBasketTP         = true;   // Shared Basket TP
-input bool     InpScaleTPWithLegs     = false;  // Fixed $50 Master Target
+input double   InpCloseProfitUSD      = 30.00;  // Master Overall Basket Take Profit Target ($30.00 USD)
+input bool     InpUseBasketTP         = false;  // Shared Basket TP (False = Dynamic OnTick Net Close)
+input bool     InpScaleTPWithLegs     = false;  // Fixed $30 Master Target
 input double   InpTPScaleFactor       = 0.00;   // TP Scale Factor
 
 //--- Trend Riding ---------------------------------------------------
 input group "=== Mega-Wave Trend Riding ==="
-input bool     InpTrendRide           = false;  // Strict $50 Target (False = No early micro exit)
-input double   InpTrendMinPeak        = 50.00;  // Trailing Start Peak ($50.00 USD)
+input bool     InpTrendRide           = false;  // Strict $30 Target (False = No early micro exit)
+input double   InpTrendMinPeak        = 30.00;  // Trailing Start Peak ($30.00 USD)
 input double   InpTrendTrailRatio     = 0.20;   // Lock 80% of Peak Runaway Profit (20% Trail)
 
 //--- PMax (Profit Maximizer by KivancOzbilgic) ----------------------
@@ -61,7 +46,7 @@ input ENUM_TIMEFRAMES InpPMaxTF       = PERIOD_CURRENT; // PMax Timeframe
 //--- Entry Grid -----------------------------------------------------
 input group "=== Initial Entry Settings ==="
 input double   InpStartLot            = 0.01;   // 0.01 Lot Base (All 20 Grid Orders @ 0.01)
-input int      InpMaxGridLevels       = 20;     // 20 Standing Stop Orders in Signal Direction!
+input int      InpMaxGridLevels       = 20;     // Exactly 20 Standing Stop Orders in Signal Direction!
 input double   InpGridStepUSD         = 3.00;   // Grid Step Spacing ($3.00 chart move per level)
 input bool     InpUseATR              = true;   // Dynamic ATR Step Padding
 input int      InpAtrPeriod           = 14;     // ATR Period
@@ -73,18 +58,18 @@ input double   InpFirstTriggerUSD     = 0.00;   // Immediate Reversal Stop on 1s
 input double   InpReverseTriggerUSD   = 0.00;   // Immediate Calculated Reversal on All Legs ($0.00)
 input int      InpReverseAfterSec     = 0;      // Immediate Arming (0 Sec)
 input double   InpReverseDistUSD      = 3.50;   // Recovery Stop Distance ($3.50)
-input double   InpRecoverMoveUSD      = 3.00;   // Dominant Recovery Move Target ($3.00)
-input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries (Dominant Squeeze)
-input double   InpMaxLot              = 0.35;   // Hard Max Lot Cap (0.35)
+input double   InpRecoverMoveUSD      = 3.00;   // Dominant Recovery Move Target ($3.00 / 30 pips)
+input bool     InpBeyondAllEntries    = true;   // Place Stop Beyond All Entries
+input double   InpMaxLot              = 1.00;   // Hard Max Lot Cap (1.00)
 input double   InpMaxBasketLots       = 0.0;    // Basket Max Lots (0 = Uncapped for Mathematical Precision)
 input int      InpMaxRecoveryLegs     = 10;     // Max Recovery Legs
-input int      InpRecoveryAccelMin    = 3;      // Acceleration Delay (Min)
+input int      InpRecoveryAccelMin    = 0;      // Acceleration Delay (Min)
 input double   InpAccelDistRatio      = 0.65;   // Acceleration Distance Ratio
 input bool     InpBreakoutRecovery    = false;  // Breakout Recovery Mode
 
 //--- Trend Filter ---------------------------------------------------
 input group "=== Trend Filter ==="
-input bool     InpUseTrendFilter      = false;  // Pure Dual-Side Breakout Hedging
+input bool     InpUseTrendFilter      = false;  // Pure Signal Direction Hedging
 input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_M5;  // Trend Filter Timeframe
 input int      InpTrendFastEMA        = 9;      // Fast EMA Period
 input int      InpTrendSlowEMA        = 21;     // Slow EMA Period
@@ -95,16 +80,16 @@ input bool     InpOneTradePerTick     = true;   // One Trade Per Tick Lock
 input int      InpCooldownSec         = 5;      // Cooldown Seconds after Exit
 input int      InpBreakEvenAfterMin   = 0;      // Break-Even Exit Timer (0 = Disabled for Full TP Hits)
 input int      InpForceCloseAfterMin  = 0;      // Hard Time Stop (0 = Off)
-input bool     InpUseTrailingNet      = false;  // Basket Trailing Net Lock (False = Full $50 TP)
+input bool     InpUseTrailingNet      = false;  // Basket Trailing Net Lock (False = Full $30 TP)
 input double   InpTrailingNetRatio    = 0.35;   // Basket Trailing Ratio
-input bool     InpHedgeFastExit       = false;  // Fast Hedged Exit (False = Full $50 TP)
+input bool     InpHedgeFastExit       = false;  // Fast Hedged Exit (False = Full $30 TP)
 input double   InpHedgeExitRatio      = 0.20;   // Fast Hedged Exit Ratio
 input double   InpSpreadPad           = 2.5;    // Spread Multiplier Padding
 input double   InpGapUSD              = 15.0;   // Gap Protection Threshold ($ USD)
 input double   InpMaxCycleLossUSD     = 0.0;    // Single Basket Circuit Breaker (0 = Pure Zone Recovery)
 input double   InpMaxAllowedDrawdownUSD = 0.0;  // Max Account Drawdown ($ USD, 0 = Pure Mathematical Recovery)
 input double   InpMaxDrawdownPercent  = 0.0;    // Max Account Drawdown (% - 0 = Pure Mathematical Recovery)
-input bool     InpCloseFridayNight    = false;  // Friday Night Close (False = Let mathematical recovery complete over weekend)
+input bool     InpCloseFridayNight    = false;  // Friday Night Close
 input ulong    InpMagicNumber = 777888; // Magic Number
 input ulong    InpSlippage            = 50;     // Slippage Tolerance
 input bool     InpShowVisual          = true;   // Show Chart Dashboard
@@ -130,19 +115,16 @@ datetime m_armRetryUntil;     // back off after a failed arm
 double   m_basketTP;          // shared TP price currently written on positions
 string   m_state;
 
-//--- v360 Phase tracking -------------------------------------------
-string   m_phase;             // "IDLE" | "TRENDING" | "RECOVERY" | "BREAKOUT"
-int      m_trendDir;          // +1 = BUY trending/breakout, -1 = SELL trending/breakout
-
-//--- v360 Trend Riding state ---------------------------------------
-double   m_trendPeakNet;      // Best net seen during TRENDING / BREAKOUT phase
-bool     m_trailActive;       // Has trailing been activated this phase?
-
-//--- v360 Recovery / Breakout state --------------------------------
-double   m_recoverTrailPeak;  // Best net seen during RECOVERY (for trailing net lock)
-datetime m_recoveryArmedAt;   // When the recovery/breakout stop was last armed
+//--- Phase tracking ------------------------------------------------
+string   m_phase;             // "IDLE" | "TRENDING" | "RECOVERY"
+int      m_trendDir;          // +1 = BUY trending, -1 = SELL trending
+double   m_trendPeakNet;      // Best net seen
+bool     m_trailActive;       // Has trailing been activated?
+double   m_recoverTrailPeak;  // Best net seen during RECOVERY
+datetime m_recoveryArmedAt;   // When the recovery stop was last armed
 
 bool SendPending(ENUM_ORDER_TYPE type, double lot, double price, string comment);
+bool SendPendingSafe(ENUM_ORDER_TYPE type, double lot, double price, string comment);
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -162,20 +144,17 @@ int OnInit()
    m_cooldownUntil     = 0;
    m_closedBarTime     = 0;
    m_gapMode           = false;
-   m_cooldownUntil     = 0;
    m_armRetryUntil     = 0;
    m_prevPosCount      = CountPos();
 
-   PrintFormat("[INIT] v360.00  basketTP $%.2f | firstTrigger $%.2f | trendRide=%d | trailRatio=%.0f%% | breakout=%d | Tester=%s",
-               InpCloseProfitUSD, InpFirstTriggerUSD,
-               InpTrendRide ? 1 : 0, InpTrendTrailRatio * 100.0,
-               InpBreakoutRecovery ? 1 : 0,
+   PrintFormat("[INIT] GoldQuantumHedger v16.0 | Basket Target $%.2f | Grid Levels %d @ %.2f | Tester=%s",
+               InpCloseProfitUSD, InpMaxGridLevels, InpStartLot,
                MQLInfoInteger(MQL_TESTER) ? "YES" : "NO");
    return(INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
-//| Tester summary.                                                   |
+//| Tester summary                                                   |
 //+------------------------------------------------------------------+
 double OnTester()
 {
@@ -191,8 +170,6 @@ double OnTester()
    double won   = TesterStatistics(STAT_PROFIT_TRADES);
    double lost  = TesterStatistics(STAT_LOSS_TRADES);
    double pf    = TesterStatistics(STAT_PROFIT_FACTOR);
-   double maxCL = TesterStatistics(STAT_MAX_CONLOSS_TRADES);
-   double minML = TesterStatistics(STAT_MIN_MARGINLEVEL);
 
    Print("========== TESTER SUMMARY ==========");
    PrintFormat("[STAT] deposit=%.2f  final=%.2f  netProfit=%.2f  (%.2f%%)",
@@ -202,7 +179,6 @@ double OnTester()
                trades, won, lost, (trades > 0 ? won / trades * 100.0 : 0));
    PrintFormat("[STAT] equityDD=%.2f (%.2f%%)  balanceDD=%.2f (%.2f%%)",
                eqdd, eqddp, baldd, balddp);
-   PrintFormat("[STAT] maxConsecLossTrades=%.0f  minMarginLevel=%.1f%%", maxCL, minML);
 
    ExportTradesToCSV();
    Print("====================================");
@@ -210,13 +186,11 @@ double OnTester()
 }
 
 //+------------------------------------------------------------------+
-//| Export complete trade history to Excel CSV file                  |
-//+------------------------------------------------------------------+
 void ExportTradesToCSV()
 {
-   int file = FileOpen("January_2026_RealTicks_Trades.csv", FILE_WRITE|FILE_CSV|FILE_COMMON, ",");
+   int file = FileOpen("GoldQuantumHedger_Trades.csv", FILE_WRITE|FILE_CSV|FILE_COMMON, ",");
    if(file == INVALID_HANDLE)
-      file = FileOpen("January_2026_RealTicks_Trades.csv", FILE_WRITE|FILE_CSV, ",");
+      file = FileOpen("GoldQuantumHedger_Trades.csv", FILE_WRITE|FILE_CSV, ",");
    
    if(file != INVALID_HANDLE)
    {
@@ -249,7 +223,6 @@ void ExportTradesToCSV()
                    DoubleToString(dProfit, 2), DoubleToString(balance, 2));
       }
       FileClose(file);
-      Print("[CSV EXPORT] Successfully exported all trades to January_2026_RealTicks_Trades.csv");
    }
 }
 
@@ -271,7 +244,6 @@ void ResetCycleState()
    m_redSince           = 0;
    m_basketTP           = 0;
    m_state              = "IDLE";
-   // v360 phase reset
    m_phase              = "IDLE";
    m_trendDir           = 0;
    m_trendPeakNet       = -1e9;
@@ -300,7 +272,7 @@ void OnTick()
       return;
    }
 
-   //=== GUARD 1: never let more than one position open on one tick ===
+   // Guard: never let more than one position open on one tick
    EnforceOnePerTick();
 
    int    buys = 0, sells = 0, buyPend = 0, sellPend = 0;
@@ -308,19 +280,18 @@ void OnTick()
    double net = Scan(buys, sells, buyPend, sellPend, buyLot, sellLot, buyPft, sellPft);
    int    pos = buys + sells;
 
-   //=== FLAT ==========================================================
+   //=== FLAT STATE ====================================================
    if(pos == 0)
    {
       ResetCycleState();
 
-      // If position count just dropped to 0 (hit TP or closed), DELETE ALL LEFTOVER PENDINGS IMMEDIATELY!
+      // If positions just closed (TP target reached), delete any leftover pendings immediately
       if(m_prevPosCount > 0)
       {
          DeletePendings();
          m_cooldownUntil = TimeCurrent() + InpCooldownSec;
          m_closedBarTime = iTime(_Symbol, _Period, 0);
          m_prevPosCount = 0;
-         Print("[CYCLE CLOSED] Target TP hit -> All leftover pendings deleted! Waiting for next candle");
          DrawVisual();
          return;
       }
@@ -332,7 +303,7 @@ void OnTick()
          return;
       }
 
-      // Next Candle Entry Filter: wait for fresh candle
+      // Fresh candle entry filter
       datetime currentBarTime = iTime(_Symbol, _Period, 0);
       if(m_closedBarTime != 0 && currentBarTime == m_closedBarTime)
       {
@@ -341,10 +312,7 @@ void OnTick()
          return;
       }
 
-      ResetCycleState();
-
-      // Trend Filter Refresh: if trend shifted while pending was waiting, update to new trend
-      int wanted = MathMax(InpMaxGridLevels, 1) * 2;
+      // Arm exactly 20 orders in signal direction
       if(buyPend + sellPend == 0)
       {
          if(TimeCurrent() < m_armRetryUntil)
@@ -360,29 +328,30 @@ void OnTick()
             return;
          }
          int tDir = TrendDir();
-         PrintFormat("[ARM] %d %s standing @ %.2f (step %.*f) based on Signal",
-                     InpMaxGridLevels, (tDir >= 0 ? "BuyStop" : "SellStop"), InpStartLot, _Digits, GridStep());
          int placed = 0;
          if(tDir >= 0)
-            placed += PlaceGrid(ORDER_TYPE_BUY_STOP);
+            placed = PlaceGrid(ORDER_TYPE_BUY_STOP);
          else
-            placed += PlaceGrid(ORDER_TYPE_SELL_STOP);
+            placed = PlaceGrid(ORDER_TYPE_SELL_STOP);
 
-         if(placed == 0)
+         if(placed < InpMaxGridLevels)
          {
             m_armRetryUntil = TimeCurrent() + 5;
-            PrintFormat("[ARM PARTIAL] only %d placed — retrying in 5s", placed);
+            PrintFormat("[ARM PARTIAL] %d of %d placed — retrying in 5s", placed, InpMaxGridLevels);
+         }
+         else
+         {
+            PrintFormat("[ARM SUCCESS] Exactly %d %s orders armed @ %.2f",
+                        placed, (tDir >= 0 ? "BuyStop" : "SellStop"), InpStartLot);
          }
       }
-      else if(WideSpread() || m_gapMode)
-         StretchPendingsFarther();
 
       m_state = StringFormat("ARMED — %d %s standing", InpMaxGridLevels, (TrendDir() >= 0 ? "BuyStop" : "SellStop"));
       DrawVisual();
       return;
    }
 
-   //=== PHASE DETECTION ===============================================
+   //=== PHASE MANAGEMENT ==============================================
    if(buys > 0 && sells > 0)
    {
       m_phase = "RECOVERY";
@@ -391,18 +360,16 @@ void OnTick()
    {
       m_trendDir = (buys >= sells) ? 1 : -1;
       m_phase    = "TRENDING";
-      // Cancel initial opposite pending immediately so it gets replaced by the dynamic recovery stop!
+      // Cancel initial opposite pending if any
       DeleteAllOfType(m_trendDir > 0 ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP);
-      ClearAllTP();
-      PrintFormat("[PHASE->%s] dir=%s, initial opposite pending cancelled",
-                  m_phase, m_trendDir > 0 ? "BUY" : "SELL");
+      PrintFormat("[PHASE->%s] dir=%s, initial %d grid orders active",
+                  m_phase, m_trendDir > 0 ? "BUY" : "SELL", InpMaxGridLevels);
    }
 
    //=== GLOBAL BASKET TARGET CHECK ====================================
    double target = CloseTarget();
    if(net >= target)
    {
-      PrintFormat(">>> [TARGET CLOSE] net $%.2f >= target $%.2f — PROFIT LOCKED", net, target);
       DeletePendings();
       m_closingInProgress = true;
       m_placeAfterClose   = true;
@@ -412,399 +379,87 @@ void OnTick()
       return;
    }
 
-   // New fill detected log
+   // Log new fill
    if(pos > m_prevPosCount)
    {
-      PrintFormat("[GRID FILL] fill #%d  net=$%.2f  totalLot=%.2f",
-                  pos, net, buyLot + sellLot);
+      PrintFormat("[GRID FILL] fill #%d | net=$%.2f | buyLot=%.2f | sellLot=%.2f | phase=%s",
+                  pos, net, buyLot, sellLot, m_phase);
    }
 
-   int activeDir = (buys >= sells) ? 1 : -1;
-
-   // Dynamic Asymmetric Protection: ALWAYS maintain single calculated recovery stop on 1st hit and all subsequent hits
-   SyncSinglePending(activeDir, buys, sells, buyLot, sellLot, net);
-
-   //=== Shared basket TP only in RECOVERY phase =======================
-   if(InpUseBasketTP && m_phase == "RECOVERY")
-      ApplyBasketTP(buyLot, sellLot);
+   // Maintain Dynamic Calculated Reversal / Recovery Loop
+   SyncSinglePending(buys, sells, buyLot, sellLot, net);
 
    m_prevPosCount = pos;
    DrawVisual();
 }
 
 //+------------------------------------------------------------------+
-//| PHASE 1 handler. Returns true if still in TRENDING phase,        |
-//| false if transitioned to RECOVERY.                               |
+//| Dynamic Single Reversal & Alternating Recovery Synchronization   |
 //+------------------------------------------------------------------+
-bool HandleTrendingPhase(int buys, int sells, double buyLot, double sellLot,
-                          double net, int pos)
+void SyncSinglePending(int buys, int sells, double buyLot, double sellLot, double net)
 {
-   int sameDirPos = (m_trendDir > 0) ? buys : sells;
-
-   //--- New fill detected this tick?
-   if(pos > m_prevPosCount)
-   {
-      PrintFormat("[GRID FILL] fill #%d  net=$%.2f  totalLot=%.2f",
-                  sameDirPos, net, buyLot + sellLot);
-   }
-
-   //--- Peak update
-   if(net > m_trendPeakNet)
-   {
-      m_trendPeakNet = net;
-      if(m_trendPeakNet >= InpTrendMinPeak && !m_trailActive)
-      {
-         m_trailActive = true;
-         PrintFormat("[TRAIL ACTIVATED] peak=$%.2f >= min $%.2f", m_trendPeakNet, InpTrendMinPeak);
-      }
-   }
-
-   //--- Trailing net check
-   if(m_trailActive)
-   {
-      double floor = m_trendPeakNet * (1.0 - InpTrendTrailRatio);
-      if(floor > m_trendPeakNet - 0.20) floor = m_trendPeakNet - 0.20;
-      if(floor < 0.50) floor = 0.50; // Lock at least +$0.50 profit
-
-      m_state = StringFormat("TRENDING #%d — peak=$%.2f  floor=$%.2f  now=$%.2f",
-                             sameDirPos, m_trendPeakNet, floor, net);
-      if(net <= floor && net > 0)
-      {
-         PrintFormat(">>> [TREND TRAIL CLOSE] peak=$%.2f  floor=$%.2f  now=$%.2f — PROFIT LOCKED",
-                     m_trendPeakNet, floor, net);
-         DeletePendings();
-         m_closingInProgress = true;
-         m_placeAfterClose   = true;
-         ProcessClose();
-         return true; // handled — closed with profit
-      }
-   }
-   else
-   {
-      double peak = (m_trendPeakNet > -1e9) ? m_trendPeakNet : 0.0;
-      m_state = StringFormat("TRENDING #%d — peak=$%.3f  (trail after $%.3f)",
-                             sameDirPos, peak, InpTrendMinPeak);
-   }
-
-   //--- Target check in TRENDING phase
-   double target = CloseTarget();
-   if(net >= target)
-   {
-      PrintFormat(">>> [TREND TARGET CLOSE] net $%.2f >= target $%.2f — PROFIT LOCKED", net, target);
-      DeletePendings();
-      m_closingInProgress = true;
-      m_placeAfterClose   = true;
-      ProcessClose();
-      return true;
-   }
-
-   //--- Trend -> Recovery transition
-   // Account for spread cost so normal entry spread doesn't prematurely kill same-direction pendings!
-   double spreadCost = SpreadCostUSD(buyLot + sellLot);
-   double trigger    = MathMax(InpFirstTriggerUSD, 0.01) + spreadCost;
-   double step       = GridStep();
-
-   // Real adverse movement check: price must actually move at least one grid step AGAINST the initial entry
-   bool priceReversed = false;
-   if(m_trendDir > 0)
-   {
-      double lowestEntry = LowestEntryAll();
-      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      if(lowestEntry > 0 && ask < (lowestEntry - step * 0.5))
-         priceReversed = true;
-   }
-   else
-   {
-      double highestEntry = HighestEntryAll();
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      if(highestEntry > 0 && bid > (highestEntry + step * 0.5))
-         priceReversed = true;
-   }
-
-   if(net <= -trigger && priceReversed)
-   {
-      PrintFormat("[PHASE->RECOVERY] net=$%.2f  trigger=$%.2f — market reversed, opposite grid active",
-                  net, -trigger);
-      m_phase = "RECOVERY";
-      if(m_redSince == 0) m_redSince = TimeCurrent();
-      return false;
-   }
-
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Detect upward range breakout when in RECOVERY phase.             |
-//| Transitions m_phase to "BREAKOUT" if price escapes entry_high.  |
-//+------------------------------------------------------------------+
-void CheckRangeBreakout(double buyLot, double sellLot, double net)
-{
-   double ask        = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double entry_high = HighestEntryAll();
-   double step       = GridStep();
-
-   if(entry_high <= 0) return;
-
-   // Price has moved above ALL open entry prices by at least one grid step
-   if(ask > entry_high + step)
-   {
-      PrintFormat("[BREAKOUT UP] ask=%.5f > entry_high=%.5f + step=%.5f — switching to BREAKOUT phase",
-                  ask, entry_high, step);
-      DeleteAllOfType(ORDER_TYPE_SELL_STOP); // cancel pending SELL recovery
-      m_phase           = "BREAKOUT";
-      m_trendDir        = +1;
-      m_trendPeakNet    = net;
-      m_trailActive     = false;
-      m_recoveryArmedAt = 0;
-   }
-   // Downward breakout (bid < entry_low) is handled by normal RECOVERY basket TP
-}
-
-//+------------------------------------------------------------------+
-//| PHASE 2B: Breakout recovery handler.                             |
-//| Arms a BuyStop beyond entry_high; trailing net exits on profit.  |
-//+------------------------------------------------------------------+
-void HandleBreakoutRecovery(int buys, int sells, double buyLot, double sellLot,
-                             double net, int pos)
-{
-   double ask        = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid        = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double entry_high = HighestEntryAll();
-   double step       = GridStep();
-   double minDist    = MinDist();
-
-   //--- Peak update + trailing
-   if(net > m_trendPeakNet)
-   {
-      m_trendPeakNet = net;
-      if(m_trendPeakNet >= InpTrendMinPeak && !m_trailActive)
-      {
-         m_trailActive = true;
-         PrintFormat("[BREAKOUT TRAIL ON] peak=$%.2f", m_trendPeakNet);
-      }
-   }
-
-   if(m_trailActive)
-   {
-      double floor = m_trendPeakNet * (1.0 - InpTrendTrailRatio);
-      m_state = StringFormat("BREAKOUT UP — peak=$%.2f  floor=$%.2f  now=$%.2f",
-                             m_trendPeakNet, floor, net);
-      if(net <= floor)
-      {
-         PrintFormat(">>> [BREAKOUT TRAIL CLOSE] peak=$%.2f  now=$%.2f", m_trendPeakNet, net);
-         DeletePendings();
-         m_closingInProgress = true;
-         m_placeAfterClose   = true;
-         ProcessClose();
-         return;
-      }
-   }
-   else
-   {
-      double peak = (m_trendPeakNet > -1e9) ? m_trendPeakNet : 0.0;
-      m_state = StringFormat("BREAKOUT UP — peak=$%.3f  (trail after $%.3f)", peak, InpTrendMinPeak);
-   }
-
-   //--- Revert to RECOVERY if price falls back into range
-   if(ask <= entry_high && entry_high > 0)
-   {
-      PrintFormat("[BREAKOUT->RECOVERY] ask=%.5f back below entry_high=%.5f", ask, entry_high);
-      m_phase           = "RECOVERY";
-      m_trendDir        = (buys >= sells) ? 1 : -1;
-      m_trendPeakNet    = -1e9;
-      m_trailActive     = false;
-      m_recoveryArmedAt = 0;
-      if(m_redSince == 0) m_redSince = TimeCurrent();
-      return;
-   }
-
-   //--- Arm / maintain the breakout BuyStop
-   ulong bt[]; double bp[];
-   CollectPendings(ORDER_TYPE_BUY_STOP, bt, bp);
-
-   double price = NormalizeDouble(entry_high + step, _Digits);
-   if(price < ask + minDist) price = NormalizeDouble(ask + minDist, _Digits);
-
-   double distToHit = (price > ask) ? (price - ask) : 0;
-   double lot = RecoveryLot(+1, net, distToHit, buyLot, sellLot, buyLot + sellLot);
-
-   if(ArraySize(bt) == 0)
-   {
-      if(price > ask)
-      {
-         SendPendingSafe(ORDER_TYPE_BUY_STOP, lot, price, "BreakoutBuy");
-         m_recoveryArmedAt = TimeCurrent();
-         PrintFormat("[BREAKOUT ARM] BuyStop lot=%.2f @ %.*f  net=$%.2f",
-                     lot, _Digits, price, net);
-      }
-   }
-   else
-   {
-      if(!OrderSelect(bt[0])) return;
-      double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
-      double curLot   = OrderGetDouble(ORDER_VOLUME_CURRENT);
-      double lotStep  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-      if(lotStep <= 0) lotStep = 0.01;
-      bool priceChanged = MathAbs(price - curPrice) > step * 0.3;
-      bool lotGrew      = lot > curLot + lotStep - 0.0000001;
-      if(priceChanged || lotGrew)
-         ReplacePending(bt[0], ORDER_TYPE_BUY_STOP, lot, price);
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Trailing net lock for RECOVERY phase (hedged basket only).       |
-//| Returns true -> trigger close with locked profit.                |
-//+------------------------------------------------------------------+
-bool CheckTrailingNet(double net, int buys, int sells)
-{
-   if(!InpUseTrailingNet) return false;
-   if(m_phase != "RECOVERY") return false;
-   if(buys == 0 || sells == 0) return false; // only for hedged (both sides open)
-
-   double target = CloseTarget();
-   double thresh = MathMax(target * MathMax(InpTrailingNetRatio, 0.10), 1.00); // at least $1.00 positive!
-
-   if(net > m_recoverTrailPeak)
-      m_recoverTrailPeak = net;
-
-   // Once peak reaches threshold, close if net drops below 50% of peak BUT STILL IN PROFIT!
-   if(m_recoverTrailPeak >= thresh && net < m_recoverTrailPeak * 0.50 && net >= 0.50)
-   {
-      PrintFormat(">>> [RECOVERY TRAIL LOCK] peak=$%.2f  now=$%.2f — PROFIT LOCKED", m_recoverTrailPeak, net);
-      return true;
-   }
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| GUARD 1 — if a single tick opened more than one position, keep   |
-//| the oldest and close the rest immediately.                        |
-//| TRENDING phase: allow same-dir fills; only close opposite-dir.   |
-//+------------------------------------------------------------------+
-void EnforceOnePerTick()
-{
-   if(!InpOneTradePerTick) return;
-
-   int now    = CountPos();
-   int opened = now - m_prevPosCount;
-   if(opened <= 1) return;
-
-   // TRENDING: multiple same-dir fills are allowed (one per tick normally
-   // but this guard only closes opposite-dir intruders)
-   if(m_phase == "TRENDING" && InpTrendRide)
-   {
-      bool closedAny = false;
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong t = PositionGetTicket(i);
-         if(!OursPos(t)) continue;
-         int d = ((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-         if(d != m_trendDir)
-         {
-            if(!m_trade.PositionClose(t)) CloseManual(t);
-            closedAny = true;
-         }
-      }
-      m_prevPosCount = CountPos();
-      if(closedAny) DeletePendings();
-      return;
-   }
-
-   // collect our tickets newest-first
-   ulong tk[];
-   ArrayResize(tk, 0);
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong t = PositionGetTicket(i);
-      if(!OursPos(t)) continue;
-      int n = ArraySize(tk);
-      ArrayResize(tk, n + 1);
-      tk[n] = t;
-   }
-   // sort descending by ticket (newest first)
-   int n = ArraySize(tk);
-   for(int i = 0; i < n; i++)
-      for(int j = i + 1; j < n; j++)
-         if(tk[j] > tk[i])
-         {
-            ulong tmp = tk[i]; tk[i] = tk[j]; tk[j] = tmp;
-         }
-
-   int kill = opened - 1;
-   PrintFormat("[TICK GUARD] %d positions opened on one tick -> closing the %d newest",
-               opened, kill);
-   for(int i = 0; i < kill && i < n; i++)
-   {
-      if(!m_trade.PositionClose(tk[i]))
-         CloseManual(tk[i]);
-   }
-   // Only delete pendings if NOT in trend riding mode
-   if(!InpTrendRide)
-      DeletePendings();
-   m_prevPosCount = CountPos();
-}
-
-//+------------------------------------------------------------------+
-//| GUARD 2 — sync opposite recovery pending leg                     |
-//+------------------------------------------------------------------+
-void SyncSinglePending(int activeDir, int buys, int sells,
-                       double buyLot, double sellLot, double net)
-{
-   if(activeDir == 0)
+   if(buys == 0 && sells == 0)
    {
       DeletePendings();
       return;
    }
-
-   static datetime s_recBackoff = 0;
-   if(TimeCurrent() < s_recBackoff) return;
-
-   if(WideSpread() || m_gapMode || SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
-      return;
 
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    if(ask <= 0 || bid <= 0) return;
 
    int pos = buys + sells;
-   int recDir = -activeDir;
-   ENUM_ORDER_TYPE recType = (recDir > 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
 
-   if(!WantRecovery(pos, net, recDir, buyLot + sellLot))
+   // 1. Determine dominant direction and required recovery pending direction
+   // If Buy volume is dominant -> we need ONE SellStop (-1) below
+   // If Sell volume is dominant -> we need ONE BuyStop (+1) above
+   int recDir = (buyLot >= sellLot) ? -1 : 1;
+   ENUM_ORDER_TYPE recType = (recDir > 0) ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   ENUM_ORDER_TYPE oppType = (recDir > 0) ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
+
+   // 2. REVERSAL HIT TRANSITION:
+   // When both buys and sells are open (Recovery phase), IMMEDIATELY DELETE all un-triggered orders of oppType!
+   if(buys > 0 && sells > 0)
    {
-      m_recoverDir = 0;
-      m_state = StringFormat("%s LIVE — riding to TP", activeDir > 0 ? "BUY" : "SELL");
-      return;
+      DeleteAllOfType(oppType);
    }
 
+   // 3. Collect and manage the single recovery stop
    ulong  t[];
    double p[];
    CollectPendings(recType, t, p);
    SortPendings(recType, t, p);
    int have = ArraySize(t);
 
-   // Only keep ONE opposite recovery stop — same-direction 20 grid stops are NEVER deleted!
-   for(int i = 1; i < have; i++)
-      m_trade.OrderDelete(t[i]);
+   // In Recovery phase or when opposite side, only keep ONE recovery order
+   if(buys > 0 && sells > 0)
+   {
+      for(int i = 1; i < have; i++)
+         m_trade.OrderDelete(t[i]);
+      if(have > 1) have = 1;
+   }
+   else
+   {
+      // In Trending phase (e.g. only Buys open): keep only ONE SellStop below
+      // (while the 20 BuyStops above remain intact)
+      if(recType == ORDER_TYPE_SELL_STOP)
+      {
+         for(int i = 1; i < have; i++)
+            m_trade.OrderDelete(t[i]);
+         if(have > 1) have = 1;
+      }
+      else if(recType == ORDER_TYPE_BUY_STOP)
+      {
+         for(int i = 1; i < have; i++)
+            m_trade.OrderDelete(t[i]);
+         if(have > 1) have = 1;
+      }
+   }
 
    double minDist = MinDist();
    double revDist = ReverseMinDist();
 
-   // Dynamic Zone Expansion on deeper legs (prevents fast whipsaws during CPI/FOMC)
-   if(pos >= 5)      revDist *= 2.0;
-   else if(pos >= 3) revDist *= 1.5;
-
-   // Recovery Acceleration: unfilled too long -> bring stop closer
-   if(InpRecoveryAccelMin > 0 && m_recoveryArmedAt > 0)
-   {
-      int waited = (int)((TimeCurrent() - m_recoveryArmedAt) / 60);
-      if(waited >= InpRecoveryAccelMin)
-         revDist *= MathMax(InpAccelDistRatio, 0.30);
-   }
-
    double price;
-
    if(recDir > 0)
    {
       price = ask + revDist;
@@ -827,10 +482,9 @@ void SyncSinglePending(int activeDir, int buys, int sells,
    }
    price = NormalizeDouble(price, _Digits);
 
-   double distToHit = (recDir > 0) ? (price - ask) : (bid - price);
-   if(distToHit < 0) distToHit = 0;
-   double lot = RecoveryLot(recDir, net, distToHit, buyLot, sellLot, buyLot + sellLot);
-   if(lot < InpStartLot) return; // Basket cap reached, do not send 0 lot order!
+   // Calculate exact mathematically required recovery lot
+   double lot = RecoveryLot(recDir, net, price, buyLot, sellLot, buyLot + sellLot);
+   if(lot < InpStartLot) return;
 
    bool   snap    = (m_recoverDir != recDir);
    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
@@ -848,14 +502,14 @@ void SyncSinglePending(int activeDir, int buys, int sells,
          // Ratchet: recovery lot only ever GROWS inside one leg
          if(lot < hadLot + lotStep - 0.0000001)
             lot = hadLot;
-         if(valid && lot <= hadLot + 0.0005)
+         if(valid && MathAbs(lot - hadLot) < 0.0005)
          {
             m_recoverNet = net;
             m_recoverDir = recDir;
             return;
          }
          if(valid)
-            price = had; // keep the anchor, only grow the lot
+            price = had; // keep the anchor price, only grow the lot size!
       }
       ReplacePending(t[0], recType, lot, price);
    }
@@ -864,135 +518,170 @@ void SyncSinglePending(int activeDir, int buys, int sells,
       if(recDir > 0 && price <= ask) return;
       if(recDir < 0 && price >= bid) return;
       SendPendingSafe(recType, lot, price, "Recovery");
-      m_recoveryArmedAt = TimeCurrent(); // record arm time
+      m_recoveryArmedAt = TimeCurrent();
    }
 
-   if(snap) m_recoveryArmedAt = TimeCurrent(); // direction change resets arm time
+   if(snap) m_recoveryArmedAt = TimeCurrent();
 
    m_recoverNet = net;
    m_recoverDir = recDir;
-   m_state = StringFormat("%s LIVE red — ONE %s recovery armed",
-                          activeDir > 0 ? "BUY" : "SELL", recDir > 0 ? "BUY" : "SELL");
-   PrintFormat("[RECOVERY] %s lot=%.2f @ %.*f  net $%.2f (buy %.2f / sell %.2f)",
-               (recDir > 0 ? "BUY_STOP" : "SELL_STOP"), lot, _Digits, price, net, buyLot, sellLot);
+   m_state = StringFormat("%s LIVE — %s recovery (%.2f lot) armed @ %.*f",
+                          (buyLot >= sellLot ? "BUY" : "SELL"),
+                          (recDir > 0 ? "BUY" : "SELL"), lot, _Digits, price);
 }
 
 //+------------------------------------------------------------------+
-//| Shared basket TP.                                                 |
-//|   net(P) = vpp * (S*P - W),  S = signed lots, W = sign*lot*entry |
-//|   net(P) = T  ->  P = (T/vpp + W) / S                            |
+//| Exact Mathematical Recovery Lot Calculation                      |
+//| Sized so that a 30-pip ($3.00) move from 'stopPrice' produces    |
+//| the exact master basket net profit target ($30.00 USD).          |
 //+------------------------------------------------------------------+
-void ApplyBasketTP(double buyLot, double sellLot)
+double RecoveryLot(int recDir, double net, double stopPrice,
+                   double buyLot, double sellLot, double totalLots)
 {
-   // A single TP price can only ever be valid for a one-directional basket.
-   // On a hedged basket the price that is a TP for the buys is behind the
-   // sells, so the server rejects it. In that case drop the TP and let the
-   // tick-side close handle it.
-   if(buyLot > 0.0005 && sellLot > 0.0005)
-   {
-      ClearAllTP();
-      m_basketTP = 0;
-      return;
-   }
+   double vpp  = ValuePerPrice();
+   double move = RecoverMovePrice(); // $3.00 price move = 30 pips
+   if(move < 0.20) move = 0.20;
 
-   double S = buyLot - sellLot;
-   if(MathAbs(S) < 0.0005)
-   {
-      ClearAllTP();
-      m_basketTP = 0;
-      return;
-   }
+   // Target exit price after the 30-pip recovery move
+   double targetPrice = (recDir > 0) ? (stopPrice + move) : (stopPrice - move);
 
-   double vpp = ValuePerPrice();
-   double W = 0;
+   // Calculate what the floating profit/loss of all existing positions will be at targetPrice
+   double existingProfitAtTarget = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong t = PositionGetTicket(i);
       if(!OursPos(t)) continue;
       double vol = PositionGetDouble(POSITION_VOLUME);
-      double px  = PositionGetDouble(POSITION_PRICE_OPEN);
-      double sg  = ((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1.0 : -1.0;
-      W += sg * vol * px;
+      double openPx = PositionGetDouble(POSITION_PRICE_OPEN);
+      ENUM_POSITION_TYPE pType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      
+      if(pType == POSITION_TYPE_BUY)
+         existingProfitAtTarget += vol * (targetPrice - openPx) * vpp;
+      else
+         existingProfitAtTarget += vol * (openPx - targetPrice) * vpp;
    }
 
+   // Master profit target ($30) + spread allowance
+   double target = InpCloseProfitUSD;
+   if(target < 0.02) target = 0.02;
+   target += SpreadCostUSD(totalLots + InpStartLot);
+
+   // Required profit from the new recovery position alone
+   double neededFromNew = target - existingProfitAtTarget;
+   if(neededFromNew <= 0)
+      neededFromNew = target;
+
+   double denom = move * vpp;
+   if(denom < 0.01) denom = 0.01;
+
+   double lot = neededFromNew / denom;
+
+   // Guarantee dominant volume
+   double oppVol = (recDir > 0) ? sellLot : buyLot;
+   double myVol  = (recDir > 0) ? buyLot  : sellLot;
+   double minDominantLot = (oppVol > 0) ? (oppVol * 1.5 + InpStartLot - myVol) : (InpStartLot * 2.0);
+   if(lot < minDominantLot) lot = minDominantLot;
+
+   // Hard max ceiling
+   if(InpMaxLot > 0 && lot > InpMaxLot) lot = InpMaxLot;
+   if(InpMaxBasketLots > 0 && (totalLots + lot) > InpMaxBasketLots)
+   {
+      lot = InpMaxBasketLots - totalLots;
+      if(lot < InpStartLot) return 0.0;
+   }
+
+   if(lot < InpStartLot) lot = InpStartLot;
+   return NormalizeLot(lot);
+}
+
+//+------------------------------------------------------------------+
+//| Guard: enforce at most one position open per tick                |
+//+------------------------------------------------------------------+
+void EnforceOnePerTick()
+{
+   if(!InpOneTradePerTick) return;
+
+   int now    = CountPos();
+   int opened = now - m_prevPosCount;
+   if(opened <= 1) return;
+
+   ulong tk[];
+   ArrayResize(tk, 0);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong t = PositionGetTicket(i);
+      if(!OursPos(t)) continue;
+      int n = ArraySize(tk);
+      ArrayResize(tk, n + 1);
+      tk[n] = t;
+   }
+   int n = ArraySize(tk);
+   for(int i = 0; i < n; i++)
+      for(int j = i + 1; j < n; j++)
+         if(tk[j] > tk[i])
+         {
+            ulong tmp = tk[i]; tk[i] = tk[j]; tk[j] = tmp;
+         }
+
+   int kill = opened - 1;
+   PrintFormat("[TICK GUARD] %d positions opened on one tick -> closing %d newest", opened, kill);
+   for(int i = 0; i < kill && i < n; i++)
+   {
+      if(!m_trade.PositionClose(tk[i]))
+         CloseManual(tk[i]);
+   }
+   m_prevPosCount = CountPos();
+}
+
+//+------------------------------------------------------------------+
+//| Place exactly 20 grid orders with guaranteed execution           |
+//+------------------------------------------------------------------+
+int PlaceGrid(ENUM_ORDER_TYPE type)
+{
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double spr = (ask > bid) ? (ask - bid) : 0;
-   double md  = MinDist();
+   if(ask <= 0 || bid <= 0) return 0;
 
-   double T  = CloseTarget();
-   if(T < 0.02) T = 0.02;
-   double tp = (T / vpp + W) / S;
+   double minDist = MinDist();
+   double step    = GridStep();
+   int    n       = MathMax(InpMaxGridLevels, 1);
+   int    placed  = 0;
 
-   // pay the exit spread on the way out, then respect the stops level
-   if(S > 0)
-   {
-      tp += spr;
-      if(tp < bid + md) tp = bid + md;
-   }
-   else
-   {
-      tp -= spr;
-      if(tp > ask - md) tp = ask - md;
-   }
-   tp = NormalizeDouble(tp, _Digits);
+   double point   = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double spread  = (ask > bid) ? (ask - bid) : 0;
+   double minSafetyGap = MathMax(spread * 2.0, point * 30);
+   if(step < minSafetyGap) step = minSafetyGap;
 
-   if(m_basketTP > 0 && MathAbs(tp - m_basketTP) < SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 5)
-      return; // nothing meaningful changed
+   double baseLot = DynamicStartLot();
+   double startOffset = MathMax(minDist + point * 20, step);
+   double basePrice = (type == ORDER_TYPE_BUY_STOP) ? (ask + startOffset) : (bid - startOffset);
 
-   int done = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   for(int i = 0; i < n; i++)
    {
-      ulong t = PositionGetTicket(i);
-      if(!OursPos(t)) continue;
-      double curTP = PositionGetDouble(POSITION_TP);
-      double curSL = PositionGetDouble(POSITION_SL);
-      if(MathAbs(curTP - tp) < SymbolInfoDouble(_Symbol, SYMBOL_POINT))
-         continue;
-      if(m_trade.PositionModify(t, curSL, tp))
-         done++;
-   }
-   if(done > 0)
-   {
-      m_basketTP = tp;
-      PrintFormat("[BASKET TP] %.*f on %d position(s)  (net lots %.2f, target $%.2f)",
-                  _Digits, tp, done, S, T);
-   }
-}
+      double lot = NormalizeLot(baseLot);
 
-//+------------------------------------------------------------------+
-void ClearAllTP()
-{
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong t = PositionGetTicket(i);
-      if(!OursPos(t)) continue;
-      if(PositionGetDouble(POSITION_TP) == 0) continue;
-      m_trade.PositionModify(t, PositionGetDouble(POSITION_SL), 0.0);
-   }
-}
-
-//+------------------------------------------------------------------+
-int ActiveDir()
-{
-   datetime best   = 0;
-   ulong    bestTk = 0;
-   int      dir    = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong t = PositionGetTicket(i);
-      if(!OursPos(t)) continue;
-      datetime tm = (datetime)PositionGetInteger(POSITION_TIME);
-      if(tm > best || (tm == best && t > bestTk))
+      double price;
+      if(type == ORDER_TYPE_BUY_STOP)
       {
-         best   = tm;
-         bestTk = t;
-         dir    = ((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+         price = basePrice + step * i;
+         price = NormalizeDouble(price, _Digits);
+         if(price <= ask + minDist) price = NormalizeDouble(ask + minDist + point * 10 + step * i, _Digits);
       }
+      else
+      {
+         price = basePrice - step * i;
+         price = NormalizeDouble(price, _Digits);
+         if(price >= bid - minDist) price = NormalizeDouble(bid - minDist - point * 10 - step * i, _Digits);
+      }
+      if(SendPendingSafe(type, lot, price, StringFormat("%s #%d",
+                         (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
+         placed++;
    }
-   return dir;
+   return placed;
 }
 
+//+------------------------------------------------------------------+
+//| Cycle tracking helpers                                           |
 //+------------------------------------------------------------------+
 datetime CycleStart()
 {
@@ -1016,8 +705,6 @@ int CycleAgeMin()
 }
 
 //+------------------------------------------------------------------+
-//| Dynamic Base Lot (Auto-Compounding Balance Multiplier)           |
-//+------------------------------------------------------------------+
 double DynamicStartLot()
 {
    if(!InpAutoCompounding) return InpStartLot;
@@ -1032,8 +719,6 @@ double DynamicStartLot()
    return NormalizeLot(lot);
 }
 
-//+------------------------------------------------------------------+
-//| Flash Crash & Extreme Spike Shield Check                         |
 //+------------------------------------------------------------------+
 bool FlashCrashActive()
 {
@@ -1050,8 +735,6 @@ bool FlashCrashActive()
    return false;
 }
 
-//+------------------------------------------------------------------+
-//| Close target — dynamic TP scaling in RECOVERY phase.             |
 //+------------------------------------------------------------------+
 double CloseTarget()
 {
@@ -1070,9 +753,6 @@ double CloseTarget()
 }
 
 //+------------------------------------------------------------------+
-//| PMax (Profit Maximizer by KivancOzbilgic) Trend Calculator       |
-//| Returns +1 for Bullish (MAvg > PMax), -1 for Bearish (MAvg < PMax)|
-//+------------------------------------------------------------------+
 int CalculatePMaxDirection(int bars = 100)
 {
    if(bars < 30) bars = 100;
@@ -1086,7 +766,6 @@ int CalculatePMaxDirection(int bars = 100)
    double multiplier = InpPMaxMultiplier;
    int emaLength = InpPMaxMALength;
    
-   // 1. Calculate HL2 and True Range
    double hl2[];
    double trVal[];
    ArrayResize(hl2, copied);
@@ -1098,15 +777,11 @@ int CalculatePMaxDirection(int bars = 100)
       if(i == copied - 1)
          trVal[i] = rates[i].high - rates[i].low;
       else
-      {
-         double tr1 = rates[i].high - rates[i].low;
-         double tr2 = MathAbs(rates[i].high - rates[i+1].close);
-         double tr3 = MathAbs(rates[i].low - rates[i+1].close);
-         trVal[i] = MathMax(tr1, MathMax(tr2, tr3));
-      }
+         trVal[i] = MathMax(rates[i].high - rates[i].low,
+                    MathMax(MathAbs(rates[i].high - rates[i+1].close),
+                            MathAbs(rates[i].low - rates[i+1].close)));
    }
    
-   // 2. EMA of HL2 (MAvg)
    double mavg[];
    ArrayResize(mavg, copied);
    double alpha = 2.0 / (emaLength + 1.0);
@@ -1114,14 +789,12 @@ int CalculatePMaxDirection(int bars = 100)
    for(int i = copied - 2; i >= 0; i--)
       mavg[i] = alpha * hl2[i] + (1.0 - alpha) * mavg[i+1];
       
-   // 3. Wilder's ATR
    double atrArr[];
    ArrayResize(atrArr, copied);
    atrArr[copied - 1] = trVal[copied - 1];
    for(int i = copied - 2; i >= 0; i--)
       atrArr[i] = (atrArr[i+1] * (atrPeriod - 1) + trVal[i]) / atrPeriod;
       
-   // 4. Trailing PMax calculation
    double longStop = 0, shortStop = 0;
    double longStopPrev = 0, shortStopPrev = 0;
    int dir = 1;
@@ -1152,8 +825,6 @@ int CalculatePMaxDirection(int bars = 100)
 }
 
 //+------------------------------------------------------------------+
-//| Trend Direction (+1 Up, -1 Down, 0 Neutral)                      |
-//+------------------------------------------------------------------+
 int TrendDir()
 {
    if(InpUsePMax)
@@ -1169,86 +840,6 @@ int TrendDir()
    if(f[0] > s[0]) return  1;
    if(f[0] < s[0]) return -1;
    return 0;
-}
-
-//+------------------------------------------------------------------+
-//| Tiered recovery trigger: first leg uses InpFirstTriggerUSD,      |
-//| subsequent legs use InpReverseTriggerUSD.                        |
-//+------------------------------------------------------------------+
-bool WantRecovery(int pos, double net, int recDir, double totalLots)
-{
-   if(pos <= 0) return false;
-   if(pos >= 10) return false;
-
-   // Immediate Reversal Arming: As soon as 1 or more orders hit, arm the calculated reversal stop!
-   if(InpFirstTriggerUSD <= 0.0) return true;
-
-   if(pos == 1)
-   {
-      double trig = -InpFirstTriggerUSD;
-      if(net > trig) return false;
-   }
-   else
-   {
-      double trig = -InpReverseTriggerUSD;
-      if(net > trig) return false;
-   }
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| R >= (target - L)/(move*vpp) - dir*signedVol                     |
-//+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
-//| Strict Step-by-Step Leg Scaling (NEVER jumps to 0.30 on 1st rec) |
-//+------------------------------------------------------------------+
-//| Dynamic Recovery Lot with Strict 0.20 Max and 1.00 Basket Cap    |
-//+------------------------------------------------------------------+
-double RecoveryLot(int recDir, double net, double distToHit,
-                   double buyLot, double sellLot, double totalLots)
-{
-   double vpp       = ValuePerPrice();
-   double signedVol = buyLot - sellLot;
-   if(distToHit < 0) distToHit = 0;
-
-   // Floating loss when the reverse stop hits
-   double lossAtFill = net - MathAbs(signedVol) * distToHit * vpp;
-
-   // Target for hedged recovery ($2.50 quick exit)
-   double target = (buyLot > 0 && sellLot > 0) ? 2.50 : InpCloseProfitUSD;
-   if(target < 0.02) target = 0.02;
-   target += SpreadCostUSD(totalLots + InpStartLot);
-
-   double move  = RecoverMovePrice();
-   double denom = move * vpp;
-   if(denom < 0.01) denom = 0.01;
-
-   // Active volumes
-   double oppVol = (recDir > 0) ? sellLot : buyLot;
-   double myVol  = (recDir > 0) ? buyLot  : sellLot;
-
-   // Exact Mathematical Lot Equation:
-   double lot = (target - lossAtFill) / denom + (oppVol - myVol);
-
-   // Minimum required lot to guarantee net dominance
-   double minRequiredLot = (oppVol > 0) ? (oppVol * 2.0 + InpStartLot - myVol) : (InpStartLot * 2.0);
-   if(minRequiredLot < InpStartLot * 2.0) minRequiredLot = InpStartLot * 2.0;
-
-   if(lot < minRequiredLot) lot = minRequiredLot;
-
-   // STRICT HARD CEILING: Never exceed InpMaxLot under any circumstance!
-   if(InpMaxLot > 0 && lot > InpMaxLot) 
-      lot = InpMaxLot;
-
-   // STRICT TOTAL BASKET CEILING: Never let entire basket volume exceed InpMaxBasketLots!
-   if(InpMaxBasketLots > 0 && (totalLots + lot) > InpMaxBasketLots)
-   {
-      lot = InpMaxBasketLots - totalLots;
-      if(lot < InpStartLot) return 0.0; // Hard basket cap reached!
-   }
-
-   if(lot < InpStartLot) lot = InpStartLot;
-   return NormalizeLot(lot);
 }
 
 //+------------------------------------------------------------------+
@@ -1277,53 +868,6 @@ double LowestEntryAll()
       if(best == 0 || px < best) best = px;
    }
    return best;
-}
-
-//+------------------------------------------------------------------+
-void DeleteAllOfType(ENUM_ORDER_TYPE type)
-{
-   ulong  t[];
-   double p[];
-   CollectPendings(type, t, p);
-   for(int i = 0; i < ArraySize(t); i++)
-      m_trade.OrderDelete(t[i]);
-}
-
-//+------------------------------------------------------------------+
-void ReplacePending(ulong ticket, ENUM_ORDER_TYPE type, double lot, double price)
-{
-   if(!OrderSelect(ticket))
-   {
-      SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop");
-      return;
-   }
-   double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
-   double curVol   = OrderGetDouble(ORDER_VOLUME_CURRENT);
-   // If volume is already the same and price hasn't moved significantly, keep it
-   if(MathAbs(curVol - lot) < 0.001 && MathAbs(curPrice - price) < SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10)
-      return;
-
-   // Place new one first before deleting old one to ensure continuous protection
-   if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop"))
-   {
-      m_trade.OrderDelete(ticket);
-   }
-}
-
-//+------------------------------------------------------------------+
-bool SendPendingSafe(ENUM_ORDER_TYPE type, double lot, double price, string comment)
-{
-   if(type == ORDER_TYPE_BUY_STOP)
-   {
-      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment))
-         return true;
-   }
-   else
-   {
-      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment))
-         return true;
-   }
-   return SendPending(type, lot, price, comment);
 }
 
 //+------------------------------------------------------------------+
@@ -1424,57 +968,6 @@ double SpreadPadDist()
    if(ask <= bid) return MinDist();
    return (ask - bid) * MathMax(InpSpreadPad, 1.0);
 }
-
-//+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
-
-
-//+------------------------------------------------------------------+
-int PlaceGrid(ENUM_ORDER_TYPE type)
-{
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   if(ask <= 0 || bid <= 0) return 0;
-
-   double minDist = MinDist();
-   double step    = GridStep();
-   int    n       = MathMax(InpMaxGridLevels, 1);
-   int    placed  = 0;
-
-   double point   = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double spread  = (ask > bid) ? (ask - bid) : 0;
-   double minSafetyGap = MathMax(spread * 2.0, point * 30);
-   if(step < minSafetyGap) step = minSafetyGap;
-
-   // Auto-Compounding dynamic progression:
-   double baseLot = DynamicStartLot();
-   double basePrice = (type == ORDER_TYPE_BUY_STOP) ? (ask + minDist) : (bid - minDist);
-
-   for(int i = 0; i < n; i++)
-   {
-      double lot = NormalizeLot(baseLot);
-
-      double price;
-      if(type == ORDER_TYPE_BUY_STOP)
-      {
-         price = basePrice + step * i;
-         price = NormalizeDouble(price, _Digits);
-         if(price <= ask) continue;
-      }
-      else
-      {
-         price = basePrice - step * i;
-         price = NormalizeDouble(price, _Digits);
-         if(price >= bid) continue;
-      }
-      if(SendPending(type, lot, price, StringFormat("%s #%d",
-                         (type == ORDER_TYPE_BUY_STOP ? "BuyStop" : "SellStop"), i + 1)))
-         placed++;
-   }
-   return placed;
-}
-
-//+------------------------------------------------------------------+
 void StretchPendingsFarther()
 {
    // No-op: Standing stops remain stationary until spread normalizes
@@ -1505,6 +998,7 @@ void SortPendings(ENUM_ORDER_TYPE type, ulong &tickets[], double &prices[])
 {
    int n = ArraySize(tickets);
    for(int i = 0; i < n; i++)
+   {
       for(int j = i + 1; j < n; j++)
       {
          bool swap = (type == ORDER_TYPE_BUY_STOP) ? (prices[j] < prices[i])
@@ -1515,6 +1009,52 @@ void SortPendings(ENUM_ORDER_TYPE type, ulong &tickets[], double &prices[])
             ulong  tt = tickets[i]; tickets[i] = tickets[j]; tickets[j] = tt;
          }
       }
+   }
+}
+
+//+------------------------------------------------------------------+
+void DeleteAllOfType(ENUM_ORDER_TYPE type)
+{
+   ulong  t[];
+   double p[];
+   CollectPendings(type, t, p);
+   for(int i = 0; i < ArraySize(t); i++)
+      m_trade.OrderDelete(t[i]);
+}
+
+//+------------------------------------------------------------------+
+void ReplacePending(ulong ticket, ENUM_ORDER_TYPE type, double lot, double price)
+{
+   if(!OrderSelect(ticket))
+   {
+      SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop");
+      return;
+   }
+   double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+   double curVol   = OrderGetDouble(ORDER_VOLUME_CURRENT);
+   if(MathAbs(curVol - lot) < 0.001 && MathAbs(curPrice - price) < SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10)
+      return;
+
+   if(SendPendingSafe(type, lot, price, (type == ORDER_TYPE_BUY_STOP) ? "BuyStop" : "SellStop"))
+   {
+      m_trade.OrderDelete(ticket);
+   }
+}
+
+//+------------------------------------------------------------------+
+bool SendPendingSafe(ENUM_ORDER_TYPE type, double lot, double price, string comment)
+{
+   if(type == ORDER_TYPE_BUY_STOP)
+   {
+      if(m_trade.BuyStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment))
+         return true;
+   }
+   else
+   {
+      if(m_trade.SellStop(lot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment))
+         return true;
+   }
+   return SendPending(type, lot, price, comment);
 }
 
 //+------------------------------------------------------------------+
